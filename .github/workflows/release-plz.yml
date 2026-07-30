@@ -9,24 +9,40 @@ permissions:
 
 jobs:
   # Publishes to crates.io and cuts a GitHub release once a release PR lands.
+  #
+  # Authentication is crates.io trusted publishing: GitHub's OIDC token is
+  # exchanged for a short-lived crates.io token, which the auth action revokes
+  # when the job ends. No long-lived publishing secret is stored in this repo.
+  #
+  # A trusted publisher can only be registered against a crate that already
+  # exists, so the very first release of each crate is published by hand. This
+  # job stays red until that has happened and both publishers are registered.
   release:
     name: Release
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # Required to request the OIDC token. Without it the exchange fails.
+      id-token: write
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
+
+      - name: Exchange the OIDC token for a crates.io token
+        uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+
       - uses: release-plz/action@v0.5
         with:
           command: release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
   # Opens or refreshes the release PR: version bumps plus changelog entries.
+  # Touches only git, never the registry, so it needs no crates.io credential.
   release-pr:
     name: Release PR
     runs-on: ubuntu-latest
@@ -46,4 +62,3 @@ jobs:
           command: release-pr
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
