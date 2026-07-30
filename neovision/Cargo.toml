@@ -26,6 +26,10 @@ neovision-core = { workspace = true }
 [dev-dependencies]
 crossterm = "0.28"
 minifb = "0.28"
+# Everything but `color_quant`, which is a default we deliberately skip: the
+# framebuffer host already produces palette indices, so there is nothing to
+# quantize. `std` and `raii_no_panic` are the other two defaults and are needed.
+gif = { version = "0.14", default-features = false, features = ["std", "raii_no_panic"] }
 
 [package.metadata.docs.rs]
 all-features = true

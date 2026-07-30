@@ -70,8 +70,13 @@ enum Action {
 // ---------------------------------------------------------------------------
 
 /// A pixel buffer, sized in whole character cells.
+///
+/// Pixels are **palette indices**, not RGB, because that is what the hardware
+/// being imitated actually stored. Keeping them indexed until the last moment
+/// means the window, the PPM and the GIF each convert once, and the GIF needs
+/// no quantization at all — its native model is exactly this.
 struct Frame {
-    px: Vec<u32>,
+    px: Vec<u8>,
     w: usize,
     h: usize,
 }
@@ -88,18 +93,23 @@ impl Frame {
     }
 
     #[inline]
-    fn set(&mut self, x: usize, y: usize, colour: u32) {
+    fn set(&mut self, x: usize, y: usize, colour: u8) {
         if x < self.w && y < self.h {
             self.px[y * self.w + x] = colour;
         }
+    }
+
+    /// Resolve to the packed `0x00RRGGBB` a window wants.
+    fn to_argb(&self) -> Vec<u32> {
+        self.px.iter().map(|&i| PALETTE[i as usize]).collect()
     }
 }
 
 /// Draw one cell's glyph: set bits take the foreground colour, clear bits the
 /// background. This is the whole of "how a cell becomes pixels".
 fn blit_cell(frame: &mut Frame, col: u16, row: u16, cell: Cell) {
-    let fg = PALETTE[cell.fg() as usize];
-    let bg = PALETTE[cell.bg() as usize];
+    let fg = cell.fg();
+    let bg = cell.bg();
     let glyph = font::glyph(cell.ch);
     let ox = col as usize * font::GLYPH_W as usize;
     let oy = row as usize * font::GLYPH_H as usize;
@@ -131,8 +141,8 @@ fn draw_caret(frame: &mut Frame, screen: &CellBuffer, cursor: TextCursor, theme:
 
     match cursor.shape {
         CursorShape::Overtype => {
-            let fg = PALETTE[cell.fg() as usize];
-            let bg = PALETTE[cell.bg() as usize];
+            let fg = cell.fg();
+            let bg = cell.bg();
             for y in 0..font::GLYPH_H as usize {
                 for x in 0..font::GLYPH_W as usize {
                     let lit = font::pixel(cell.ch, x as u16, y as u16);
@@ -143,7 +153,7 @@ fn draw_caret(frame: &mut Frame, screen: &CellBuffer, cursor: TextCursor, theme:
             }
         }
         CursorShape::Insert => {
-            let colour = PALETTE[(theme.cursor & 0x0F) as usize];
+            let colour = theme.cursor & 0x0F;
             // A two-scanline underline on the cell's bottom rows.
             for y in (font::GLYPH_H as usize - 2)..font::GLYPH_H as usize {
                 for x in 0..font::GLYPH_W as usize {
@@ -331,22 +341,173 @@ fn write_ppm(frame: &Frame, path: &str) -> io::Result<()> {
     let mut out = io::BufWriter::new(std::fs::File::create(path)?);
     write!(out, "P6\n{} {}\n255\n", frame.w, frame.h)?;
     let mut rgb = Vec::with_capacity(frame.px.len() * 3);
-    for &p in &frame.px {
-        rgb.push((p >> 16) as u8);
-        rgb.push((p >> 8) as u8);
-        rgb.push(p as u8);
+    for &i in &frame.px {
+        let c = PALETTE[i as usize];
+        rgb.push((c >> 16) as u8);
+        rgb.push((c >> 8) as u8);
+        rgb.push(c as u8);
     }
     out.write_all(&rgb)?;
     out.flush()
 }
 
+/// The 16 VGA colours flattened to the RGB triples a GIF global palette wants.
+fn gif_palette() -> Vec<u8> {
+    let mut p = Vec::with_capacity(16 * 3);
+    for c in PALETTE {
+        p.push((c >> 16) as u8);
+        p.push((c >> 8) as u8);
+        p.push(c as u8);
+    }
+    p
+}
+
+/// Write an animated GIF, one frame per key in the script.
+///
+/// No quantization happens anywhere: a cell's attribute nibble *is* a palette
+/// index, and a GIF is an indexed format, so the frames go out exactly as
+/// rasterized. That is also why the files are small despite being 640x400.
+fn write_gif(path: &str, script: &[FormEvent], delay_cs: u16) -> io::Result<()> {
+    let screen = Size::new(COLS, ROWS);
+    let mut state = demo_form();
+    let mut file = std::fs::File::create(path)?;
+    let palette = gif_palette();
+
+    let px_w = COLS * font::GLYPH_W;
+    let px_h = ROWS * font::GLYPH_H;
+    let mut encoder = gif::Encoder::new(&mut file, px_w, px_h, &palette)
+        .map_err(|e| io::Error::other(format!("gif header: {e}")))?;
+    encoder
+        .set_repeat(gif::Repeat::Infinite)
+        .map_err(|e| io::Error::other(format!("gif repeat: {e}")))?;
+
+    // One frame before any key, then one after each — and a long hold on the
+    // last so a loop does not snap back the instant it finishes.
+    let render = |state: &FormState<Action>| {
+        let (composed, cursor) = compose(
+            state,
+            screen,
+            "Tab/arrows to move · Enter to edit · Esc to quit",
+        );
+        rasterize(&composed, cursor, FormTheme::DEFAULT)
+    };
+
+    let mut prev = render(&state);
+    encoder
+        .write_frame(&gif::Frame {
+            width: px_w,
+            height: px_h,
+            delay: delay_cs,
+            dispose: gif::DisposalMethod::Keep,
+            buffer: std::borrow::Cow::Borrowed(&prev.px),
+            ..Default::default()
+        })
+        .map_err(|e| io::Error::other(format!("gif frame: {e}")))?;
+
+    for (i, ev) in script.iter().enumerate() {
+        state.handle(*ev);
+        let next = render(&state);
+        let delay = if i + 1 == script.len() {
+            delay_cs * 5
+        } else {
+            delay_cs
+        };
+
+        // Only the changed rectangle goes out. Between two frames of a form
+        // that is a row or two of a dialog rather than the whole 640x400
+        // screen, and `DisposalMethod::Keep` leaves the rest standing.
+        let ((left, top, w, h), buffer) = dirty_rect(&prev, &next);
+        encoder
+            .write_frame(&gif::Frame {
+                left,
+                top,
+                width: w,
+                height: h,
+                delay,
+                dispose: gif::DisposalMethod::Keep,
+                buffer: std::borrow::Cow::Owned(buffer),
+                ..Default::default()
+            })
+            .map_err(|e| io::Error::other(format!("gif frame: {e}")))?;
+        prev = next;
+    }
+    Ok(())
+}
+
+/// The bounding box of pixels that differ between two frames, and just those
+/// pixels. Falls back to a single pixel when nothing changed, since a frame
+/// still has to exist to carry its delay.
+fn dirty_rect(prev: &Frame, next: &Frame) -> ((u16, u16, u16, u16), Vec<u8>) {
+    let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0usize, 0usize);
+    for y in 0..next.h {
+        for x in 0..next.w {
+            if prev.px[y * prev.w + x] != next.px[y * next.w + x] {
+                x0 = x0.min(x);
+                y0 = y0.min(y);
+                x1 = x1.max(x);
+                y1 = y1.max(y);
+            }
+        }
+    }
+    if x0 == usize::MAX {
+        return ((0, 0, 1, 1), vec![next.px[0]]);
+    }
+
+    let (w, h) = (x1 - x0 + 1, y1 - y0 + 1);
+    let mut buf = Vec::with_capacity(w * h);
+    for y in y0..=y1 {
+        buf.extend_from_slice(&next.px[y * next.w + x0..y * next.w + x1 + 1]);
+    }
+    ((x0 as u16, y0 as u16, w as u16, h as u16), buf)
+}
+
 const COLS: u16 = 80;
 const ROWS: u16 = 25;
+
+/// The scripted interaction the README's animation shows: pick a palette from
+/// a popup, flip a toggle, type into the number field, then press OK.
+const README_SCRIPT: &[FormEvent] = &[
+    FormEvent::Enter, // open the Palette popup
+    FormEvent::Down,  // highlight Amber
+    FormEvent::Enter, // choose it
+    FormEvent::Tab,   // -> Scale
+    FormEvent::Tab,   // -> Scanlines
+    FormEvent::Enter, // toggle it on
+    FormEvent::Tab,   // -> Frame delay, whole-selected on entry
+    FormEvent::Char('3'),
+    FormEvent::Char('3'),
+    // Ends on OK focused rather than pressed: pressing it closes the form,
+    // which changes nothing on screen and would spend the last frame on a
+    // picture identical to the one before it.
+    FormEvent::Tab, // -> OK (Renderer is read-only and skipped)
+];
 
 fn main() -> io::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--single") {
         return single_frame(&args);
+    }
+    if args.iter().any(|a| a == "--gif") {
+        let path = flag_value(&args, "--gif")
+            .cloned()
+            .unwrap_or_else(|| "demo.gif".to_string());
+        let script: Vec<FormEvent> = match flag_value(&args, "--keys") {
+            Some(keys) => keys
+                .split(',')
+                .filter(|t| !t.is_empty())
+                .map(|t| parse_key(t).ok_or_else(|| io::Error::other(format!("unknown key: {t}"))))
+                .collect::<io::Result<_>>()?,
+            None => README_SCRIPT.to_vec(),
+        };
+        write_gif(&path, &script, 60)?;
+        let bytes = std::fs::metadata(&path)?.len();
+        println!(
+            "wrote {} ({} frames, {} KiB)",
+            path,
+            script.len() + 1,
+            bytes / 1024
+        );
+        return Ok(());
     }
     interactive()
 }
@@ -450,7 +611,7 @@ fn interactive() -> io::Result<()> {
         let (composed, cursor) = compose(&state, screen, &status);
         let frame = rasterize(&composed, cursor, FormTheme::DEFAULT);
         window
-            .update_with_buffer(&frame.px, frame.w, frame.h)
+            .update_with_buffer(&frame.to_argb(), frame.w, frame.h)
             .map_err(|e| io::Error::other(format!("could not present a frame: {e}")))?;
 
         let shift = window.is_key_down(Key::LeftShift) || window.is_key_down(Key::RightShift);

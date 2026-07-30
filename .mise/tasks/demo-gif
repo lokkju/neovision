@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#MISE description="Regenerate docs/demo.gif from the framebuffer host"
+set -euo pipefail
+
+# Deterministic: same script in, same bytes out, so re-running this on an
+# unchanged renderer leaves the file alone.
+cargo run --example framebuffer --features font -- --gif docs/demo.gif

@@ -14,6 +14,15 @@ layout of text-mode video memory — and stops there. What turns that buffer int
 pixels is entirely up to the host: a terminal, a framebuffer, a wasm canvas, or
 real VGA memory at `0xB8000`.
 
+![neovision, driven in the framebuffer host](https://raw.githubusercontent.com/lokkju/neovision/main/docs/demo.gif)
+
+Above is the `framebuffer` example, rasterized straight from the cell buffer at
+640x400 with the IBM VGA 8x16 face. Its 16 colours are the GIF's whole palette —
+nothing is quantized, because a VGA attribute nibble already *is* a palette
+index.
+
+The same form through the `terminal` host, as `--dump` prints it:
+
 ```
 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
 ░░░░░░░░░░░░░░░░░░░░╔════════  Display Settings  ═════════╗░░░░░░░░░░░░░░░░░░░░░

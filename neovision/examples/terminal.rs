@@ -36,7 +36,7 @@ use crossterm::{
 use neovision::neovision_core::cp437;
 use neovision::{
     render_with_cursor, ButtonKind, Cell, CellBuffer, CellDraw, ChoiceOption, CursorShape, Field,
-    FieldKind, FormEvent, FormState, LayerStack, Point, Size, TextCursor,
+    FieldKind, FormEvent, FormState, FormTheme, LayerStack, Point, Size, TextCursor,
 };
 
 /// What this demo's form can ask for.
@@ -82,6 +82,33 @@ fn vga_color(index: u8) -> Color {
     }
 }
 
+/// The same 16 colours as RGB, for the one place a `Color` will not do.
+///
+/// A terminal draws its caret in a colour it was configured with, not in one
+/// derived from the cell underneath, so an underline caret on the focused row's
+/// light-grey bar is invisible unless the host says otherwise. OSC 12 is how
+/// you say otherwise, and it takes RGB.
+fn vga_rgb(index: u8) -> (u8, u8, u8) {
+    match index & 0x0F {
+        0x0 => (0x00, 0x00, 0x00),
+        0x1 => (0x00, 0x00, 0xAA),
+        0x2 => (0x00, 0xAA, 0x00),
+        0x3 => (0x00, 0xAA, 0xAA),
+        0x4 => (0xAA, 0x00, 0x00),
+        0x5 => (0xAA, 0x00, 0xAA),
+        0x6 => (0xAA, 0x55, 0x00),
+        0x7 => (0xAA, 0xAA, 0xAA),
+        0x8 => (0x55, 0x55, 0x55),
+        0x9 => (0x55, 0x55, 0xFF),
+        0xA => (0x55, 0xFF, 0x55),
+        0xB => (0x55, 0xFF, 0xFF),
+        0xC => (0xFF, 0x55, 0x55),
+        0xD => (0xFF, 0x55, 0xFF),
+        0xE => (0xFF, 0xFF, 0x55),
+        _ => (0xFF, 0xFF, 0xFF),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 2. Input: terminal key -> FormEvent
 // ---------------------------------------------------------------------------
@@ -119,7 +146,12 @@ fn to_form_event(key: KeyEvent) -> Option<FormEvent> {
 /// Attribute changes are emitted only when they actually change, so a screen
 /// of mostly-uniform colour costs a handful of escape sequences rather than
 /// one per cell.
-fn paint(out: &mut impl Write, buf: &CellBuffer, cursor: Option<TextCursor>) -> io::Result<()> {
+fn paint(
+    out: &mut impl Write,
+    buf: &CellBuffer,
+    cursor: Option<TextCursor>,
+    theme: FormTheme,
+) -> io::Result<()> {
     queue!(out, Hide)?;
 
     let mut last_attr: Option<u8> = None;
@@ -145,15 +177,23 @@ fn paint(out: &mut impl Write, buf: &CellBuffer, cursor: Option<TextCursor>) -> 
     }
 
     match cursor {
-        Some(c) => queue!(
-            out,
-            MoveTo(c.col, c.row),
-            match c.shape {
-                CursorShape::Insert => SetCursorStyle::SteadyUnderScore,
-                CursorShape::Overtype => SetCursorStyle::SteadyBlock,
-            },
-            Show
-        )?,
+        Some(c) => {
+            // Tell the terminal what colour the caret is. Without this it uses
+            // whatever the user configured — usually something pale, which
+            // disappears against the focused row's light-grey bar. `theme.cursor`
+            // is chosen to contrast against exactly that background.
+            let (r, g, b) = vga_rgb(theme.cursor);
+            write!(out, "\x1b]12;#{r:02X}{g:02X}{b:02X}\x07")?;
+            queue!(
+                out,
+                MoveTo(c.col, c.row),
+                match c.shape {
+                    CursorShape::Insert => SetCursorStyle::SteadyUnderScore,
+                    CursorShape::Overtype => SetCursorStyle::SteadyBlock,
+                },
+                Show
+            )?
+        }
         None => queue!(out, Hide)?,
     }
 
@@ -292,10 +332,49 @@ fn compose(
 ///
 /// No raw mode and no terminal required, so `--dump` works over a pipe and in
 /// CI — which makes the rendering checkable without a human driving it.
-fn dump() -> io::Result<()> {
+/// Parse one `--keys` token into an event, so a headless run can reach a state
+/// a human would have to tab into.
+fn parse_key(token: &str) -> Option<FormEvent> {
+    Some(match token {
+        "up" => FormEvent::Up,
+        "down" => FormEvent::Down,
+        "left" => FormEvent::Left,
+        "right" => FormEvent::Right,
+        "tab" => FormEvent::Tab,
+        "backtab" => FormEvent::BackTab,
+        "enter" => FormEvent::Enter,
+        "esc" => FormEvent::Escape,
+        "backspace" => FormEvent::Backspace,
+        "home" => FormEvent::Home,
+        "end" => FormEvent::End,
+        "delete" => FormEvent::Delete,
+        "insert" => FormEvent::Insert,
+        other => {
+            let mut chars = other.chars();
+            let c = chars.next()?;
+            if chars.next().is_some() {
+                return None;
+            }
+            FormEvent::Char(c)
+        }
+    })
+}
+
+fn dump(args: &[String]) -> io::Result<()> {
+    let mut state = demo_form();
+    if let Some(i) = args.iter().position(|a| a == "--keys") {
+        let keys = args.get(i + 1).cloned().unwrap_or_default();
+        for token in keys.split(',').filter(|t| !t.is_empty()) {
+            let Some(ev) = parse_key(token) else {
+                return Err(io::Error::other(format!("unknown key token: {token}")));
+            };
+            state.handle(ev);
+        }
+    }
+
     let screen = Size::new(80, 25);
     let (composed, cursor) = compose(
-        &demo_form(),
+        &state,
         screen,
         "Tab/arrows to move · Enter to edit · Esc to quit",
     );
@@ -314,8 +393,9 @@ fn dump() -> io::Result<()> {
 }
 
 fn main() -> io::Result<()> {
-    if std::env::args().skip(1).any(|a| a == "--dump") {
-        return dump();
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--dump") {
+        return dump(&args);
     }
 
     let mut stdout = io::stdout();
@@ -324,6 +404,8 @@ fn main() -> io::Result<()> {
 
     let result = run(&mut stdout);
 
+    // OSC 112 hands the caret colour back to whatever the user had configured.
+    let _ = write!(stdout, "\x1b]112\x07");
     execute!(
         stdout,
         Show,
@@ -359,7 +441,7 @@ fn run(stdout: &mut impl Write) -> io::Result<Vec<Action>> {
         };
 
         let (composed, cursor) = compose(&state, screen, &status);
-        paint(stdout, &composed, cursor)?;
+        paint(stdout, &composed, cursor, FormTheme::DEFAULT)?;
 
         match event::read()? {
             Event::Resize(w, h) => {
