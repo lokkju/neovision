@@ -179,10 +179,19 @@ fn write_label<C: CellDraw + ?Sized>(
     label: &str,
     attr: u8,
     hotkey_attr: Option<u8>,
+    width: u16,
 ) {
-    let (text, mnemonic) = parse_mnemonic(label);
+    let (mut text, mnemonic) = parse_mnemonic(label);
+    // Truncate rather than overflow. `write_str` stops at the layer's edge,
+    // not at the label column's, so a label longer than its column used to run
+    // under the value beside it and be overwritten mid-word.
+    let fitted: String = text.chars().take(width as usize).collect();
+    text = fitted;
     canvas.write_str(at, &text, attr);
     if let (Some((_, idx)), Some(hot)) = (mnemonic, hotkey_attr) {
+        if idx >= text.chars().count() {
+            return; // the marked letter was truncated away
+        }
         // Repaint just the one cell, so the accelerator picks up its own
         // attribute without the label being drawn twice.
         let x = at.x.saturating_add(idx as u16);
@@ -461,7 +470,14 @@ fn render_impl<A>(
         // No highlight: only a button's accelerator is live, so only a
         // button's is marked. Markers are still stripped, so a label that
         // carries one reads correctly rather than showing a tilde.
-        write_label(&mut body, Point::new(2, row), field.label, label_attr, None);
+        write_label(
+            &mut body,
+            Point::new(2, row),
+            field.label,
+            label_attr,
+            None,
+            LABEL_W,
+        );
         if let FieldKind::Cluster {
             style,
             items,
@@ -824,7 +840,16 @@ fn draw_cluster<A>(
 
         // As for field labels: a cluster item claims no accelerator, so it
         // advertises none.
-        write_label(body, Point::new(x + 4, row), &item.label, attr, None);
+        // The item text starts after `(x) `, so what is left of the value
+        // column is its budget.
+        write_label(
+            body,
+            Point::new(x + 4, row),
+            &item.label,
+            attr,
+            None,
+            VALUE_W.saturating_sub(4),
+        );
     }
 }
 
@@ -964,6 +989,34 @@ mod tests {
             !row_text(&buf, row).contains('~'),
             "markers must never occupy a cell"
         );
+    }
+
+    #[test]
+    fn a_label_longer_than_its_column_is_truncated_not_overwritten() {
+        // It used to run under the value column and be overwritten mid-word,
+        // because write_str stops at the layer's edge rather than the label's.
+        let screen = Size::new(80, 25);
+        let f: FormState<TestOp> = FormState::new(
+            "T",
+            alloc::vec![Field {
+                label: "A very long label indeed",
+                kind: FieldKind::Toggle {
+                    on: true,
+                    on_action: TestOp::A,
+                    off_action: TestOp::B,
+                },
+                restore: Vec::new(),
+            }],
+        );
+        let buf = flatten(render(&f, screen), screen);
+        let row = find_row(&buf, "A very").expect("the label row");
+        let text = row_text(&buf, row);
+        // The value still starts where it always does, undisturbed.
+        assert!(text.contains("[Yes"), "got: {text}");
+        // And the label stopped at its own column rather than running into it.
+        let open = col_of(&buf, row, b'[');
+        let label_end = col_of(&buf, row, b'A') + LABEL_W;
+        assert!(open >= label_end, "label ran into the value column: {text}");
     }
 
     #[test]
