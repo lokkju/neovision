@@ -24,7 +24,7 @@ use neovision_core::{
 /// the same split, carrying separate "shortcut" entries for normal and
 /// selected text.
 #[derive(Debug, Clone, Copy)]
-pub struct HotkeyTheme {
+pub struct HotkeyAttrs {
     /// On an unfocused row, over `normal`.
     pub normal: u8,
     /// On the focused row, over `selected`.
@@ -37,7 +37,7 @@ pub struct HotkeyTheme {
 /// into the drawing code) because a themed pixel renderer is planned: it will
 /// want to vary these per skin without touching `render()` itself.
 #[derive(Debug, Clone, Copy)]
-pub struct FormTheme {
+pub struct Theme {
     /// Frame and labels.
     pub normal: u8,
     /// The bracketed value text of an editable field — distinct from
@@ -76,17 +76,17 @@ pub struct FormTheme {
     /// clear this, or the form underlines letters promising an affordance
     /// nothing will honour. The `~X~` markers are stripped from labels either
     /// way, so the text reads correctly regardless.
-    pub hotkey: Option<HotkeyTheme>,
+    pub hotkey: Option<HotkeyAttrs>,
     /// The whole-value selection highlight of a selected Number field. Reverse
     /// of the focused row bar (0x71) so selected digits read as a highlight
     /// block on the inverse row.
     pub selection: u8,
 }
 
-impl FormTheme {
+impl Theme {
     /// CUA convention: light grey on blue, inverted for the selection bar,
     /// bright white values and a yellow title accent.
-    pub const DEFAULT: FormTheme = FormTheme {
+    pub const DEFAULT: Theme = Theme {
         normal: 0x17,   // light grey on blue
         value: 0x1F,    // bright white on blue
         selected: 0x71, // blue on light grey
@@ -97,7 +97,7 @@ impl FormTheme {
         // caret reads well against the blue panel and then vanishes on the
         // focused row, which is the one place it actually appears.
         cursor: 0x70,
-        hotkey: Some(HotkeyTheme {
+        hotkey: Some(HotkeyAttrs {
             normal: 0x1E,   // bright yellow on blue, the CUA accelerator colour
             selected: 0x74, // red on light grey: the same accent, legible on the bar
         }),
@@ -116,6 +116,18 @@ const TEXT_VISIBLE_W: u16 = VALUE_W - 2;
 fn text_scroll(cursor: usize) -> usize {
     cursor.saturating_sub(TEXT_VISIBLE_W as usize - 1)
 }
+
+/// Former name of [`Theme`].
+///
+/// Renamed because it themes more than a form: the panel, its labels and
+/// values, the selection bar, the caret and now accelerators, with clusters
+/// and scrollbars still to come.
+#[deprecated(since = "0.2.0", note = "renamed to `Theme`")]
+pub type FormTheme = Theme;
+
+/// Former name of [`HotkeyAttrs`].
+#[deprecated(since = "0.2.0", note = "renamed to `HotkeyAttrs`")]
+pub type HotkeyTheme = HotkeyAttrs;
 
 /// Width of the label column, in cells.
 const LABEL_W: u16 = 14;
@@ -341,7 +353,7 @@ fn button_run_start<A>(fields: &[Field<A>]) -> usize {
 fn render_impl<A>(
     state: &FormState<A>,
     screen: Size,
-    theme: FormTheme,
+    theme: Theme,
 ) -> (Vec<Layer>, Option<TextCursor>) {
     let mut layers = Vec::new();
     let mut text_cursor: Option<TextCursor> = None;
@@ -588,7 +600,7 @@ fn render_impl<A>(
 
 /// Draw `state` into layers, bottom-to-top.
 pub fn render<A>(state: &FormState<A>, screen: Size) -> Vec<Layer> {
-    render_impl(state, screen, FormTheme::DEFAULT).0
+    render_impl(state, screen, Theme::DEFAULT).0
 }
 
 /// As `render`, but also returns the text-cursor descriptor for the
@@ -601,20 +613,20 @@ pub fn render_with_cursor<A>(
     state: &FormState<A>,
     screen: Size,
 ) -> (Vec<Layer>, Option<TextCursor>) {
-    render_impl(state, screen, FormTheme::DEFAULT)
+    render_impl(state, screen, Theme::DEFAULT)
 }
 
-/// As [`render_with_cursor`], but drawn with the caller's own [`FormTheme`].
+/// As [`render_with_cursor`], but drawn with the caller's own [`Theme`].
 ///
-/// This is what makes `FormTheme` more than documentation: a host with its own
+/// This is what makes `Theme` more than documentation: a host with its own
 /// skin varies the attributes here rather than reaching into the renderer. It
-/// is also the only way to clear [`FormTheme::hotkey`], which a host that
+/// is also the only way to clear [`Theme::hotkey`], which a host that
 /// cannot deliver `FormEvent::Hotkey` should do, so that labels stop
 /// advertising accelerators nothing will honour.
 pub fn render_themed<A>(
     state: &FormState<A>,
     screen: Size,
-    theme: FormTheme,
+    theme: Theme,
 ) -> (Vec<Layer>, Option<TextCursor>) {
     render_impl(state, screen, theme)
 }
@@ -625,7 +637,7 @@ fn push_popup<A>(
     popup: &Popup,
     panel: Rect,
     screen: Size,
-    theme: FormTheme,
+    theme: Theme,
 ) {
     let FieldKind::Choice { options, .. } = &state.fields()[popup.field].kind else {
         return;
@@ -724,6 +736,15 @@ mod tests {
     }
 
     #[test]
+    fn the_former_theme_names_still_resolve() {
+        // A 0.1.0 dependant should get a deprecation warning, not a break.
+        #[allow(deprecated)]
+        let _t: FormTheme = Theme::DEFAULT;
+        #[allow(deprecated)]
+        let _h: Option<HotkeyTheme> = Theme::DEFAULT.hotkey;
+    }
+
+    #[test]
     fn a_marked_label_renders_without_its_tildes() {
         let screen = Size::new(80, 25);
         let buf = flatten(render(&marked_form(), screen), screen);
@@ -741,7 +762,7 @@ mod tests {
         let buf = flatten(render(&f, screen), screen);
         let row = find_row(&buf, "Sound").expect("sound row");
         let s_at = col_of(&buf, row, b'S');
-        let hot = FormTheme::DEFAULT.hotkey.expect("default marks hotkeys");
+        let hot = Theme::DEFAULT.hotkey.expect("default marks hotkeys");
         // Field 0 is focused, so the accelerator uses the selected variant.
         assert_eq!(buf.get(s_at, row).attr, hot.selected);
         // ...and the letter beside it does not.
@@ -754,7 +775,7 @@ mod tests {
         let buf = flatten(render(&marked_form(), screen), screen);
         let row = find_row(&buf, "OK").expect("button row");
         let o_at = col_of(&buf, row, b'O');
-        let hot = FormTheme::DEFAULT.hotkey.expect("default marks hotkeys");
+        let hot = Theme::DEFAULT.hotkey.expect("default marks hotkeys");
         // The OK button is not focused here, so it takes the normal variant.
         assert_eq!(buf.get(o_at, row).attr, hot.normal);
     }
@@ -762,9 +783,9 @@ mod tests {
     #[test]
     fn clearing_the_hotkey_theme_leaves_labels_unmarked_but_still_readable() {
         let screen = Size::new(80, 25);
-        let theme = FormTheme {
+        let theme = Theme {
             hotkey: None,
-            ..FormTheme::DEFAULT
+            ..Theme::DEFAULT
         };
         let f = marked_form();
         let buf = flatten(render_themed(&f, screen, theme).0, screen);
@@ -979,8 +1000,8 @@ mod tests {
             let c = (0..80).find(|c| buf.get(*c, row).ch != b' ').unwrap();
             buf.get(c + 2, row).attr
         };
-        assert_eq!(attr_at(focused), FormTheme::DEFAULT.selected);
-        assert_ne!(attr_at(other), FormTheme::DEFAULT.selected);
+        assert_eq!(attr_at(focused), Theme::DEFAULT.selected);
+        assert_ne!(attr_at(other), Theme::DEFAULT.selected);
     }
 
     #[test]
@@ -1222,7 +1243,7 @@ mod tests {
         let screen = Size::new(80, 25);
         let buf = flatten(render(&f, screen), screen);
         let row = find_row(&buf, "Cycle period").expect("number row");
-        let sel = FormTheme::DEFAULT.selection;
+        let sel = Theme::DEFAULT.selection;
         let digits = digit_cell_attrs(&buf, row);
         assert_eq!(digits.len(), 3, "all three seeded digits are present");
         assert!(
@@ -1377,7 +1398,7 @@ mod tests {
         let cancel_at = text.find("Cancel").unwrap() as u16;
         assert_eq!(
             buf.get(ok_at, row).attr,
-            FormTheme::DEFAULT.selected,
+            Theme::DEFAULT.selected,
             "the focused button's label is highlighted"
         );
         // The requirement is the WHOLE chrome, not just the label: check the
@@ -1385,12 +1406,12 @@ mod tests {
         // "[  OK  ]", so the bracket sits 3 cells before the label).
         assert_eq!(
             buf.get(ok_at - 3, row).attr,
-            FormTheme::DEFAULT.selected,
+            Theme::DEFAULT.selected,
             "the focused button's bracket is highlighted too, not just its label"
         );
         assert_ne!(
             buf.get(cancel_at, row).attr,
-            FormTheme::DEFAULT.selected,
+            Theme::DEFAULT.selected,
             "the unfocused button must not be highlighted"
         );
     }

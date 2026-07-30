@@ -192,13 +192,13 @@ rasterizer is checked in CI rather than only by eye, and `--keys` drives the
 form first so states a human would have to tab into — an edit caret, an open
 popup — stay reachable headlessly.
 
-### `FormTheme.cursor` — kept, and its default corrected
+### `Theme.cursor` — kept, and its default corrected
 
 Writing the pixel host settled it, exactly as intended. The field is real: a
 pixel host is the first thing that has to decide what colour a caret is, since
 `TextCursor` deliberately carries position and shape but not colour.
 
-Building it also exposed a genuine bug in the default. `FormTheme::DEFAULT`
+Building it also exposed a genuine bug in the default. `Theme::DEFAULT`
 had `cursor: 0x1F`, bright white — a sensible choice against the blue panel,
 and the wrong one, because a caret only ever appears on the **focused row**,
 which is painted in `selected` (`0x71`, a light-grey background). White on light

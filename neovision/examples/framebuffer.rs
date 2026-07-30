@@ -28,7 +28,7 @@ use minifb::{Key, KeyRepeat, Scale, Window, WindowOptions};
 use neovision::neovision_core::font;
 use neovision::{
     render_with_cursor, ButtonKind, Cell, CellBuffer, CellDraw, ChoiceOption, CursorShape, Field,
-    FieldKind, FormEvent, FormState, FormTheme, LayerStack, Point, Size, TextCursor,
+    FieldKind, FormEvent, FormState, LayerStack, Point, Size, TextCursor, Theme,
 };
 
 /// The 16 VGA colours as `0x00RRGGBB`, in hardware order.
@@ -133,9 +133,9 @@ fn blit_cell(frame: &mut Frame, col: u16, row: u16, cell: Cell) {
 /// `Overtype` is documented as reverse video, so it needs nothing external —
 /// swapping the cell's own two colours is the whole of it, and matches what VGA
 /// hardware does. `Insert` has no such rule, so it takes its colour from the
-/// theme, which is what `FormTheme::cursor` is for: a skin can recolour the
+/// theme, which is what `Theme::cursor` is for: a skin can recolour the
 /// caret without touching the renderer.
-fn draw_caret(frame: &mut Frame, screen: &CellBuffer, cursor: TextCursor, theme: FormTheme) {
+fn draw_caret(frame: &mut Frame, screen: &CellBuffer, cursor: TextCursor, theme: Theme) {
     let cell = screen.get(cursor.col, cursor.row);
     let ox = cursor.col as usize * font::GLYPH_W as usize;
     let oy = cursor.row as usize * font::GLYPH_H as usize;
@@ -165,7 +165,7 @@ fn draw_caret(frame: &mut Frame, screen: &CellBuffer, cursor: TextCursor, theme:
     }
 }
 
-fn rasterize(screen: &CellBuffer, cursor: Option<TextCursor>, theme: FormTheme) -> Frame {
+fn rasterize(screen: &CellBuffer, cursor: Option<TextCursor>, theme: Theme) -> Frame {
     let mut frame = Frame::for_grid(screen.cols, screen.rows);
     for row in 0..screen.rows {
         for col in 0..screen.cols {
@@ -442,7 +442,7 @@ fn write_gif(path: &str, script: &[FormEvent], delay_cs: u16) -> io::Result<()> 
             screen,
             "Tab/arrows · Enter edits · Alt+letter jumps · Esc quits",
         );
-        rasterize(&composed, cursor, FormTheme::DEFAULT)
+        rasterize(&composed, cursor, Theme::DEFAULT)
     };
 
     let mut prev = render(&state);
@@ -627,7 +627,7 @@ fn single_frame(args: &[String]) -> io::Result<()> {
         screen,
         "Tab/arrows · Enter edits · Alt+letter jumps · Esc quits",
     );
-    let frame = rasterize(&composed, cursor, FormTheme::DEFAULT);
+    let frame = rasterize(&composed, cursor, Theme::DEFAULT);
     write_ppm(&frame, &path)?;
     match cursor {
         Some(c) => println!(
@@ -666,7 +666,7 @@ fn interactive() -> io::Result<()> {
         };
 
         let (composed, cursor) = compose(&state, screen, &status);
-        let frame = rasterize(&composed, cursor, FormTheme::DEFAULT);
+        let frame = rasterize(&composed, cursor, Theme::DEFAULT);
         window
             .update_with_buffer(&frame.to_argb(), frame.w, frame.h)
             .map_err(|e| io::Error::other(format!("could not present a frame: {e}")))?;
