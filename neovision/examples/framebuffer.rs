@@ -27,8 +27,9 @@ use minifb::{Key, KeyRepeat, Scale, Window, WindowOptions};
 
 use neovision::neovision_core::font;
 use neovision::{
-    render_with_cursor, Cell, CellBuffer, CellDraw, ChoiceOption, CursorShape, EnterReach, Field,
-    FieldKind, FormEvent, FormState, LayerStack, Point, Size, TextCursor, Theme,
+    render_with_cursor, Cell, CellBuffer, CellDraw, ChoiceOption, ClusterItem, ClusterStyle,
+    CursorShape, EnterReach, Field, FieldKind, FormEvent, FormState, LayerStack, Point, Size,
+    TextCursor, Theme,
 };
 
 /// The 16 VGA colours as `0x00RRGGBB`, in hardware order.
@@ -311,13 +312,48 @@ fn demo_form() -> FormState<Action> {
                 restore: vec![Action::SetName("default".to_string())],
             },
             Field {
-                label: "Sca~n~lines",
-                kind: FieldKind::Toggle {
-                    on: false,
-                    on_action: Action::SetScanlines(true),
-                    off_action: Action::SetScanlines(false),
+                label: "~V~ideo",
+                kind: FieldKind::Cluster {
+                    style: ClusterStyle::Radio,
+                    items: vec![
+                        ClusterItem {
+                            label: "~C~GA".to_string(),
+                            on: true,
+                            on_action: Action::SetScale("CGA"),
+                            off_action: None,
+                        },
+                        ClusterItem {
+                            label: "~E~GA".to_string(),
+                            on: false,
+                            on_action: Action::SetScale("EGA"),
+                            off_action: None,
+                        },
+                    ],
+                    cursor: 0,
                 },
-                restore: vec![Action::SetScanlines(false)],
+                restore: vec![Action::SetScale("CGA")],
+            },
+            Field {
+                label: "Optio~n~s",
+                kind: FieldKind::Cluster {
+                    style: ClusterStyle::Check,
+                    items: vec![
+                        ClusterItem {
+                            label: "Sca~n~lines".to_string(),
+                            on: false,
+                            on_action: Action::SetScanlines(true),
+                            off_action: Some(Action::SetScanlines(false)),
+                        },
+                        ClusterItem {
+                            label: "~B~link".to_string(),
+                            on: false,
+                            on_action: Action::SetScanlines(true),
+                            off_action: Some(Action::SetScanlines(false)),
+                        },
+                    ],
+                    cursor: 0,
+                },
+                restore: vec![],
             },
             Field {
                 label: "~F~rame delay",
@@ -515,7 +551,7 @@ const ROWS: u16 = 25;
 /// The scripted interaction the README's animation shows: pick a palette from
 /// a popup, flip a toggle, type into the number field, then press OK.
 const README_SCRIPT: &[FormEvent] = &[
-    FormEvent::Enter, // open the Palette popup
+    FormEvent::Enter, // open the Palette dropdown
     FormEvent::Down,  // highlight Amber
     FormEvent::Enter, // choose it
     FormEvent::Tab,   // -> Scale
@@ -523,9 +559,13 @@ const README_SCRIPT: &[FormEvent] = &[
     FormEvent::Char('n'),
     FormEvent::Char('e'),
     FormEvent::Char('o'),
-    FormEvent::Tab,   // -> Scanlines
-    FormEvent::Enter, // toggle it on
-    FormEvent::Tab,   // -> Frame delay
+    FormEvent::Tab,       // -> Video, a radio cluster
+    FormEvent::Down,      // a radio caret selects as it moves
+    FormEvent::Tab,       // -> Options, a check cluster
+    FormEvent::Char(' '), // Space flips the item under the caret
+    FormEvent::Down,
+    FormEvent::Char(' '), // ...and the next one
+    FormEvent::Tab,       // -> Frame delay
     FormEvent::Char('3'),
     FormEvent::Char('3'),
     // Ends on OK focused rather than pressed: pressing it closes the form,
