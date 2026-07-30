@@ -161,6 +161,23 @@ consumer needs stacked modals or a desktop metaphor. YAGNI until then.
   not packaging: typeface *designs* are not copyrightable in the US and raw
   bitmaps are treated as data, but the conveniently packaged sources are often
   CC BY-SA, which has no place in an MIT repository.
-- **`FormTheme.cursor`.** A public field nothing reads — verified against both
-  this repository and the originating one. It is a candidate for removal while
-  removal is still free.
+- **`FormTheme.cursor`.** Nothing reads it yet, but that does not make it dead.
+  `FormTheme` exists as separate attribute bytes precisely so a themed pixel
+  renderer can vary them per skin, and `cursor` is the caret colour for that
+  renderer.
+
+  `TextCursor` superseded the *mechanism* — the caret used to be drawn straight
+  into the cell buffer, and is now reported out-of-band as `{col, row, shape}`
+  for the host to draw. It did not supersede the *colour*, which is the one
+  thing `FormTheme.cursor` still supplies.
+
+  Whether that knob is wanted at all is genuinely open. Both shapes already
+  imply where their colour comes from — `Overtype` is documented as reverse
+  video, and real VGA hardware draws the cursor in the character's own
+  foreground colour, with no separate colour register. A faithful renderer may
+  therefore never read the field.
+
+  **Resolve it when the framebuffer host is written**, not before: that host is
+  the only thing that will show whether a skin wants to override the caret
+  colour or simply invert. Pre-1.0 keeps removal cheap either way, and the cost
+  of holding it is one unused `u8`.
