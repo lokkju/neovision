@@ -358,7 +358,8 @@ pub enum FormEvent {
     /// which field claimed the character, and only it knows the CUA rule that
     /// a hotkey on a button presses it while one on any other field focuses
     /// it. Hosts that cannot offer hotkeys should also clear
-    /// [`FormTheme::hotkey`], so labels stop advertising them.
+    /// [`FormTheme::hotkey`](crate::FormTheme::hotkey), so labels stop
+    /// advertising them.
     Hotkey(char),
 }
 

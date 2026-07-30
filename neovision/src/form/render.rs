@@ -70,7 +70,8 @@ pub struct FormTheme {
     /// How to mark the accelerator letter in a label, or `None` to leave
     /// labels unmarked.
     ///
-    /// `None` is for hosts that cannot deliver [`FormEvent::Hotkey`] at all —
+    /// `None` is for hosts that cannot deliver
+    /// [`FormEvent::Hotkey`](crate::FormEvent::Hotkey) at all —
     /// an embedded keypad, a canvas that swallows modifiers. Such a host must
     /// clear this, or the form underlines letters promising an affordance
     /// nothing will honour. The `~X~` markers are stripped from labels either
