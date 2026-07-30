@@ -6,4 +6,4 @@ pub mod render;
 pub use model::{
     ButtonKind, ChoiceOption, Field, FieldKind, FormEvent, FormOutcome, FormState, Popup,
 };
-pub use render::{render, render_with_cursor, FormTheme};
+pub use render::{render, render_themed, render_with_cursor, FormTheme, HotkeyTheme};

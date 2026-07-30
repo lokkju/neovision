@@ -51,6 +51,7 @@ enum Action {
     SetScale(&'static str),
     SetSound(bool),
     SetDelay(u32),
+    SetName(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -118,6 +119,14 @@ fn vga_rgb(index: u8) -> (u8, u8, u8) {
 /// Returning `None` means "the form has no opinion about this key" — the host
 /// keeps such keys for itself.
 fn to_form_event(key: KeyEvent) -> Option<FormEvent> {
+    // Alt+letter is this host's accelerator. Emitting `Hotkey` is entirely
+    // optional — a host with no Alt simply never sends it, and the form works
+    // the same minus accelerators.
+    if key.modifiers.contains(KeyModifiers::ALT) {
+        if let KeyCode::Char(c) = key.code {
+            return Some(FormEvent::Hotkey(c));
+        }
+    }
     Some(match key.code {
         KeyCode::Up => FormEvent::Up,
         KeyCode::Down => FormEvent::Down,
@@ -246,7 +255,19 @@ fn demo_form() -> FormState<Action> {
                 1,
             ),
             Field {
-                label: "Sound",
+                label: "~P~rofile",
+                kind: FieldKind::Text {
+                    buffer: "default".to_string(),
+                    cursor: "default".len(),
+                    selected: true,
+                    overtype: false,
+                    max_len: 32,
+                    commit: |s| Action::SetName(s.to_string()),
+                },
+                restore: vec![Action::SetName("default".to_string())],
+            },
+            Field {
+                label: "S~o~und",
                 kind: FieldKind::Toggle {
                     on: true,
                     on_action: Action::SetSound(true),
@@ -255,7 +276,7 @@ fn demo_form() -> FormState<Action> {
                 restore: vec![Action::SetSound(true)],
             },
             Field {
-                label: "Frame delay",
+                label: "~F~rame delay",
                 kind: FieldKind::Number {
                     value: 250,
                     buffer: "250".to_string(),
@@ -376,7 +397,7 @@ fn dump(args: &[String]) -> io::Result<()> {
     let (composed, cursor) = compose(
         &state,
         screen,
-        "Tab/arrows to move · Enter to edit · Esc to quit",
+        "Tab/arrows · Enter edits · Alt+letter jumps · Esc quits",
     );
 
     for row in 0..composed.rows {
@@ -437,7 +458,7 @@ fn run(stdout: &mut impl Write) -> io::Result<Vec<Action>> {
     loop {
         let status = match log.last() {
             Some(a) => format!("last action: {a:?}   ·   Esc or Cancel to quit"),
-            None => "Tab/arrows to move · Enter to edit · Esc to quit".to_string(),
+            None => "Tab/arrows · Enter edits · Alt+letter jumps · Esc quits".to_string(),
         };
 
         let (composed, cursor) = compose(&state, screen, &status);
