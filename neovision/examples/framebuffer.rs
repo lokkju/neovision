@@ -300,7 +300,7 @@ fn demo_form() -> FormState<Action> {
                 1,
             ),
             Field {
-                label: "P~r~ofile",
+                label: "Profile",
                 kind: FieldKind::Text {
                     buffer: "default".to_string(),
                     cursor: "default".len(),
@@ -312,18 +312,18 @@ fn demo_form() -> FormState<Action> {
                 restore: vec![Action::SetName("default".to_string())],
             },
             Field {
-                label: "~V~ideo",
+                label: "Video",
                 kind: FieldKind::Cluster {
                     style: ClusterStyle::Radio,
                     items: vec![
                         ClusterItem {
-                            label: "~C~GA".to_string(),
+                            label: "CGA".to_string(),
                             on: true,
                             on_action: Action::SetScale("CGA"),
                             off_action: None,
                         },
                         ClusterItem {
-                            label: "~E~GA".to_string(),
+                            label: "EGA".to_string(),
                             on: false,
                             on_action: Action::SetScale("EGA"),
                             off_action: None,
@@ -334,18 +334,18 @@ fn demo_form() -> FormState<Action> {
                 restore: vec![Action::SetScale("CGA")],
             },
             Field {
-                label: "Optio~n~s",
+                label: "Options",
                 kind: FieldKind::Cluster {
                     style: ClusterStyle::Check,
                     items: vec![
                         ClusterItem {
-                            label: "Sca~n~lines".to_string(),
+                            label: "Scanlines".to_string(),
                             on: false,
                             on_action: Action::SetScanlines(true),
                             off_action: Some(Action::SetScanlines(false)),
                         },
                         ClusterItem {
-                            label: "~B~link".to_string(),
+                            label: "Blink".to_string(),
                             on: false,
                             on_action: Action::SetScanlines(true),
                             off_action: Some(Action::SetScanlines(false)),
@@ -356,7 +356,7 @@ fn demo_form() -> FormState<Action> {
                 restore: vec![],
             },
             Field {
-                label: "~F~rame delay",
+                label: "Frame delay",
                 kind: FieldKind::Number {
                     value: 16,
                     buffer: "16".to_string(),

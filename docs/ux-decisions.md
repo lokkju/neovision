@@ -15,6 +15,7 @@ decided otherwise" should not look alike a year from now.
   - [Space always operates the focused control](#space-always-operates-the-focused-control)
   - [How far Enter reaches is the form's choice](#how-far-enter-reaches-is-the-forms-choice)
   - [Enter opens a dropdown](#enter-opens-a-dropdown)
+  - [Only buttons claim accelerators](#only-buttons-claim-accelerators)
   - [Hotkeys are an inversion](#hotkeys-are-an-inversion)
 - [Controls](#controls)
   - [The dropdown stays, alongside clusters](#the-dropdown-stays-alongside-clusters)
@@ -100,6 +101,31 @@ Alt+Down.
 inconsistency — Enter meaning "open" here and "accept" there — but Space
 operating everything means no one has to remember which. That is what makes the
 departure affordable.
+
+### Only buttons claim accelerators
+
+A `~X~` marker is live in a button's label. In a field label or a cluster item
+it is stripped and ignored — the text renders correctly and promises nothing.
+
+**Why not everywhere.** Turbo Vision put accelerators on labels bound to
+controls, and it is tempting: jumping to `Frame delay` beats seven tabs. But
+labels are domain words, not letters chosen to be distinct, so a form of any
+size collides. A `Sound` field and an `OK` button both claim `o`; first match
+wins; **the button becomes unreachable** — losing the one accelerator that does
+something Tab cannot. That is not a hypothetical, it is what the demo did.
+
+The rule that falls out: **an accelerator invokes a command; navigation is
+arrows and Tab.** Navigation needs no namespace and cannot collide.
+
+**Why now rather than later.** Widening this — to menu items, once there are
+menus — is additive and breaks nothing. Narrowing it would break every form
+relying on it. A scope decision that is cheap in one direction and expensive in
+the other should start at the cheap end.
+
+**Consequence.** Nothing advertises what it cannot do: a field label never
+draws a marked letter, because it would be promising an accelerator that is not
+there. `FormState::hotkey_conflicts` reports duplicate claims so a form's own
+tests can catch them, since only the form's author can resolve one.
 
 ### Hotkeys are an inversion
 

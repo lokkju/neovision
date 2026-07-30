@@ -178,7 +178,7 @@ The dialog control set was audited against Turbo Vision and closed:
 | `TCheckBoxes` | `FieldKind::Cluster` with `ClusterStyle::Check` |
 | `TRadioButtons` | `FieldKind::Cluster` with `ClusterStyle::Radio` |
 | `TStaticText` | `FieldKind::ReadOnly` |
-| `TLabel` + hotkey | `~X~` markers on any label, matched via `FormEvent::Hotkey` |
+| `TLabel` + hotkey | `~X~` markers on **button** labels, matched via `FormEvent::Hotkey` |
 | `TListBox` + `TScrollBar` | the choice popup, which scrolls and draws a bar |
 | — | `FieldKind::Choice`, a dropdown Turbo Vision never had |
 

@@ -318,18 +318,18 @@ fn demo_form() -> FormState<Action> {
         " Panel Setup ",
         vec![
             Field {
-                label: "~D~river",
+                label: "Driver",
                 kind: FieldKind::Cluster {
                     style: ClusterStyle::Radio,
                     items: vec![
                         ClusterItem {
-                            label: "~I~LI9341".to_string(),
+                            label: "ILI9341".to_string(),
                             on: true,
                             on_action: Action::SetMode("ILI9341"),
                             off_action: None,
                         },
                         ClusterItem {
-                            label: "S~T~7789".to_string(),
+                            label: "ST7789".to_string(),
                             on: false,
                             on_action: Action::SetMode("ST7789"),
                             off_action: None,
@@ -340,11 +340,11 @@ fn demo_form() -> FormState<Action> {
                 restore: vec![Action::SetMode("ILI9341")],
             },
             Field {
-                label: "~O~ptions",
+                label: "Options",
                 kind: FieldKind::Cluster {
                     style: ClusterStyle::Check,
                     items: vec![ClusterItem {
-                        label: "In~v~ert".to_string(),
+                        label: "Invert".to_string(),
                         on: false,
                         on_action: Action::Invert(true),
                         off_action: Some(Action::Invert(false)),
@@ -354,7 +354,7 @@ fn demo_form() -> FormState<Action> {
                 restore: vec![Action::Invert(false)],
             },
             Field {
-                label: "~R~otation",
+                label: "Rotation",
                 kind: FieldKind::Choice {
                     options: ["0°", "90°", "180°", "270°"]
                         .iter()
@@ -368,7 +368,7 @@ fn demo_form() -> FormState<Action> {
                 restore: vec![],
             },
             Field {
-                label: "~N~ame",
+                label: "Name",
                 kind: FieldKind::Text {
                     buffer: "panel0".to_string(),
                     cursor: "panel0".len(),
@@ -380,7 +380,7 @@ fn demo_form() -> FormState<Action> {
                 restore: vec![Action::SetName("panel0".to_string())],
             },
             Field {
-                label: "~B~acklight",
+                label: "Backlight",
                 kind: FieldKind::Number {
                     value: 80,
                     buffer: "80".to_string(),

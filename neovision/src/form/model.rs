@@ -838,68 +838,76 @@ impl<A: Clone> FormState<A> {
         self.fields.get_mut(self.focus).map(|f| &mut f.kind)
     }
 
-    /// The field claiming `c` as its accelerator, if any.
+    /// The button claiming `c` as its accelerator, if any.
+    ///
+    /// **Only buttons claim accelerators.** Marking one in a field label or a
+    /// cluster item does nothing; the marker is stripped and the text renders
+    /// plainly.
+    ///
+    /// An accelerator invokes a command. Navigation is what Tab and the arrow
+    /// keys are for, and they need no namespace — whereas an accelerator on
+    /// every label collides constantly, because labels are domain words rather
+    /// than letters chosen to be distinct. A form with a `Sound` field and an
+    /// `OK` button has both claiming `o`, and first-match-wins silently makes
+    /// the button unreachable, which is exactly the accelerator worth having.
+    ///
+    /// Widening this later — to menu items, when there are menus — is
+    /// additive. Narrowing it would not be, which is why it starts narrow.
     ///
     /// Case-insensitive, because a host reporting Alt+O has no idea whether
-    /// the label spelled it `O` or `o`. Non-focusable fields are skipped: a
-    /// read-only row cannot take focus, so letting it claim a character would
-    /// silently swallow the accelerator.
-    fn hotkey_target(&self, c: char) -> Option<(usize, Option<usize>)> {
+    /// the label spelled it `O` or `o`.
+    fn hotkey_target(&self, c: char) -> Option<usize> {
         let wanted = c.to_ascii_lowercase();
-        let matches =
-            |claimed: Option<char>| claimed.map(|m| m.to_ascii_lowercase()) == Some(wanted);
-        for (i, f) in self.fields.iter().enumerate() {
+        self.fields.iter().position(|f| {
             if !f.focusable() {
-                continue;
+                return false;
             }
-            // A cluster's items each claim their own accelerator, as Turbo
-            // Vision's did, so a hotkey picks the item rather than merely the
-            // group it belongs to.
-            if let FieldKind::Cluster { items, .. } = &f.kind {
-                if let Some(item) = items.iter().position(|it| matches(mnemonic_of(&it.label))) {
-                    return Some((i, Some(item)));
+            match &f.kind {
+                FieldKind::Button { label, .. } => {
+                    mnemonic_of(label).map(|m| m.to_ascii_lowercase()) == Some(wanted)
                 }
+                _ => false,
             }
-            // A button carries its accelerator in its own label; every other
-            // field carries it in the label beside it.
-            let claimed = match &f.kind {
-                FieldKind::Button { label, .. } => mnemonic_of(label),
-                _ => mnemonic_of(f.label),
+        })
+    }
+
+    /// Every accelerator claimed more than once.
+    ///
+    /// A form claiming one letter twice has a bug in it, and only its author
+    /// can fix it — so this exists to be asserted on in their tests rather
+    /// than discovered by a user whose Alt+O does the wrong thing.
+    pub fn hotkey_conflicts(&self) -> Vec<char> {
+        let mut claimed: Vec<char> = Vec::new();
+        let mut dupes: Vec<char> = Vec::new();
+        for f in self.fields.iter().filter(|f| f.focusable()) {
+            let FieldKind::Button { label, .. } = &f.kind else {
+                continue;
             };
-            if matches(claimed) {
-                return Some((i, None));
+            let Some(m) = mnemonic_of(label).map(|m| m.to_ascii_lowercase()) else {
+                continue;
+            };
+            if claimed.contains(&m) {
+                if !dupes.contains(&m) {
+                    dupes.push(m);
+                }
+            } else {
+                claimed.push(m);
             }
         }
-        None
+        dupes
     }
 
     /// Focus the field claiming `c` — and, if it is a button, press it.
     ///
     /// That split is the CUA rule: an accelerator on a button activates it,
     /// while one on any other control only moves focus there.
+    /// Press the button claiming `c`.
     fn on_hotkey(&mut self, c: char) -> FormOutcome<A> {
-        let Some((target, item)) = self.hotkey_target(c) else {
+        let Some(target) = self.hotkey_target(c) else {
             return FormOutcome::nothing();
         };
         self.focus = target;
-        self.reselect_focused();
-
-        // An accelerator aimed at a cluster item puts the caret on it and
-        // operates it, which is the whole point of marking it.
-        if let Some(item) = item {
-            if let Some(FieldKind::Cluster { cursor, .. }) =
-                self.fields.get_mut(target).map(|f| &mut f.kind)
-            {
-                *cursor = item;
-            }
-            return self.cluster_activate().unwrap_or_else(FormOutcome::nothing);
-        }
-
-        if matches!(self.fields[target].kind, FieldKind::Button { .. }) {
-            self.activate()
-        } else {
-            FormOutcome::nothing()
-        }
+        self.press_button(target)
     }
 
     /// Move the caret within the focused cluster.
@@ -2354,27 +2362,6 @@ mod tests {
         assert_eq!(cluster_of(&f).1, alloc::vec![false, false, false]);
     }
 
-    #[test]
-    fn a_cluster_item_can_be_reached_by_its_own_accelerator() {
-        let mut f = cluster_form(ClusterStyle::Check);
-        f.handle(FormEvent::Tab); // move to OK first
-        assert_eq!(f.focus(), 1);
-        let outcome = f.handle(FormEvent::Hotkey('m'));
-        assert_eq!(f.focus(), 0, "focus returns to the cluster");
-        let (cursor, on) = cluster_of(&f);
-        assert_eq!(cursor, 2, "and lands on the item that claimed it");
-        assert_eq!(on, alloc::vec![false, false, true], "which it also flips");
-        assert_eq!(outcome.actions, alloc::vec![TestOp::SetColor(3)]);
-    }
-
-    #[test]
-    fn a_radio_accelerator_chooses_its_item_outright() {
-        let mut f = cluster_form(ClusterStyle::Radio);
-        let outcome = f.handle(FormEvent::Hotkey('s'));
-        assert_eq!(cluster_of(&f).1, alloc::vec![false, true, false]);
-        assert_eq!(outcome.actions, alloc::vec![TestOp::On]);
-    }
-
     fn role_form() -> FormState<TestOp> {
         FormState::new(
             "T",
@@ -2510,21 +2497,61 @@ mod tests {
     }
 
     #[test]
-    fn a_hotkey_moves_focus_to_the_field_that_claimed_it() {
+    fn only_a_button_claims_an_accelerator() {
+        // `~S~ound` marks a letter, but a field label claims nothing: an
+        // accelerator invokes a command, and navigating to a field is what Tab
+        // is for. See `hotkey_target`.
         let mut f = hotkey_form();
         f.set_focus(1);
         let outcome = f.handle(FormEvent::Hotkey('s'));
-        assert_eq!(f.focus(), 0, "focus moved to the ~S~ound field");
-        // Focusing is all it does — a non-button must not be activated.
+        assert_eq!(f.focus(), 1, "focus did not move");
         assert!(outcome.actions.is_empty());
+    }
+
+    #[test]
+    fn a_field_label_no_longer_shadows_a_buttons_accelerator() {
+        // The bug this rule removes: `S~o~und` and `~O~K` both claimed `o`,
+        // first match won, and the button became unreachable — losing the one
+        // accelerator that does something Tab cannot.
+        let mut f = FormState::new(
+            "T",
+            alloc::vec![
+                Field {
+                    label: "S~o~und",
+                    kind: FieldKind::Toggle {
+                        on: false,
+                        on_action: TestOp::On,
+                        off_action: TestOp::Off,
+                    },
+                    restore: alloc::vec![TestOp::Off],
+                },
+                Field::ok(),
+            ],
+        );
+        let outcome = f.handle(FormEvent::Hotkey('o'));
+        assert!(outcome.close, "Alt+O reaches OK, not the Sound field");
     }
 
     #[test]
     fn a_hotkey_matches_regardless_of_case() {
         let mut f = hotkey_form();
-        f.set_focus(1);
-        f.handle(FormEvent::Hotkey('S'));
-        assert_eq!(f.focus(), 0);
+        let outcome = f.handle(FormEvent::Hotkey('O'));
+        assert!(outcome.close, "OK was pressed");
+    }
+
+    #[test]
+    fn duplicate_accelerators_are_reportable_so_a_form_can_test_for_them() {
+        let clean = hotkey_form();
+        assert!(clean.hotkey_conflicts().is_empty());
+
+        let clashing: FormState<TestOp> = FormState::new(
+            "T",
+            alloc::vec![
+                Field::button("~O~pen", ButtonRole::Stay, None),
+                Field::ok(), // also claims 'o'
+            ],
+        );
+        assert_eq!(clashing.hotkey_conflicts(), alloc::vec!['o']);
     }
 
     #[test]

@@ -458,15 +458,10 @@ fn render_impl<A>(
                 attr: label_attr,
             }),
         );
-        write_label(
-            &mut body,
-            Point::new(2, row),
-            field.label,
-            label_attr,
-            theme
-                .hotkey
-                .map(|h| if focused { h.selected } else { h.normal }),
-        );
+        // No highlight: only a button's accelerator is live, so only a
+        // button's is marked. Markers are still stripped, so a label that
+        // carries one reads correctly rather than showing a tilde.
+        write_label(&mut body, Point::new(2, row), field.label, label_attr, None);
         if let FieldKind::Cluster {
             style,
             items,
@@ -827,15 +822,9 @@ fn draw_cluster<A>(
         body.put(x + 1, row, Cell { ch: mark, attr });
         body.put(x + 2, row, Cell { ch: close, attr });
 
-        write_label(
-            body,
-            Point::new(x + 4, row),
-            &item.label,
-            attr,
-            theme
-                .hotkey
-                .map(|h| if on_caret { h.selected } else { h.normal }),
-        );
+        // As for field labels: a cluster item claims no accelerator, so it
+        // advertises none.
+        write_label(body, Point::new(x + 4, row), &item.label, attr, None);
     }
 }
 
@@ -978,17 +967,19 @@ mod tests {
     }
 
     #[test]
-    fn the_accelerator_letter_carries_its_own_attribute() {
+    fn a_field_label_advertises_no_accelerator_because_it_has_none() {
+        // Only buttons claim accelerators, so only buttons mark one. A field
+        // label that carries a marker still renders its text correctly — it
+        // just does not promise anything.
         let screen = Size::new(80, 25);
-        let f = marked_form();
-        let buf = flatten(render(&f, screen), screen);
+        let buf = flatten(render(&marked_form(), screen), screen);
         let row = find_row(&buf, "Sound").expect("sound row");
         let s_at = col_of(&buf, row, b'S');
         let hot = Theme::DEFAULT.hotkey.expect("default marks hotkeys");
-        // Field 0 is focused, so the accelerator uses the selected variant.
-        assert_eq!(buf.get(s_at, row).attr, hot.selected);
-        // ...and the letter beside it does not.
-        assert_ne!(buf.get(s_at + 1, row).attr, hot.selected);
+        assert_ne!(buf.get(s_at, row).attr, hot.selected);
+        assert_ne!(buf.get(s_at, row).attr, hot.normal);
+        // Every cell of the label shares one attribute.
+        assert_eq!(buf.get(s_at, row).attr, buf.get(s_at + 1, row).attr);
     }
 
     #[test]
