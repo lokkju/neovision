@@ -1,8 +1,9 @@
 # neovision — design and extraction record
 
-> **Status:** as-built. This records what neovision is, how it is structured,
-> and the decisions taken when it was extracted into its own repository on
-> 2026-07-30. Items still open are marked as such.
+> **Status:** as-built, and current as of the Turbo Vision parity pass. Records
+> what neovision is, how it is structured, and the reasoning behind the
+> decisions taken — both at extraction and while closing parity. Items still
+> open are marked as such.
 
 ## What it is
 
@@ -86,10 +87,23 @@ Three things, and nothing else:
    foreground colours, `bg()` gives 8 background colours, `blink()` is bit 7.
 3. **Input.** Translate the host's key events into `FormEvent`.
 
-`examples/terminal.rs` is a complete host in roughly 250 lines, most of it
-comment. Its `--dump` mode renders one frame to stdout as text with no TTY and
-no raw mode, which makes the rendering verifiable in CI rather than only by a
-human driving it.
+There are three complete hosts to read. `terminal.rs` hands cells to a
+terminal; `framebuffer.rs` rasterizes every pixel itself; `embedded.rs` draws
+through `embedded-graphics`' `DrawTarget`, so the same function compiles
+unchanged against a real ILI9341 or ST7789 panel.
+
+Every host has a headless mode — `--dump` for the terminal one, `--single` for
+the other two — that renders without a display, so what they draw is checked in
+CI rather than only by a human driving it. All three also accept `--keys`, which
+drives the form before rendering so that states a human would have to tab into
+stay reachable.
+
+**Looking at a rendered frame catches what tests do not.** Three separate
+rendering defects shipped past green test suites during development and were
+each caught in one glance at a dump: a scrollbar drawn over the popup's border,
+a scrollbar track drawn in the same glyph as the desktop behind it, and a caret
+coloured for a background it never appears on. Render and look before believing
+a render test.
 
 ## Decisions taken at extraction
 
@@ -121,12 +135,14 @@ exactly one cell, which is what lets callers reason about column alignment.
 The extraction is mechanically safe because the suite came with it. Every claim
 below is checked in CI on each push:
 
-- 146 tests (unit + doctests)
+- 226 tests (unit + doctests)
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `cargo doc --workspace --no-deps` with `RUSTDOCFLAGS=-D warnings`
 - MSRV build against the 1.76 toolchain
 - A `thumbv7em-none-eabihf` build, which proves the `no_std` claim by compiling
   for a target that has no operating system at all — a host build never can
+- A headless render from each of the three hosts, so the rasterizers are
+  covered rather than merely compiled
 
 ## Publishing
 
@@ -150,6 +166,73 @@ release PR; a second gate on the same decision buys nothing. If the repository
 later gains collaborators and a real approval step is wanted, the right shape is
 to trigger the release job on tag pushes so the prompt fires once per release
 rather than once per merge.
+
+## Turbo Vision parity
+
+The dialog control set was audited against Turbo Vision and closed:
+
+| Turbo Vision | neovision |
+|---|---|
+| `TInputLine` | `FieldKind::Text`, sharing one edit state machine with `Number` |
+| `TButton` | `FieldKind::Button` with a `ButtonRole` and an optional default |
+| `TCheckBoxes` | `FieldKind::Cluster` with `ClusterStyle::Check` |
+| `TRadioButtons` | `FieldKind::Cluster` with `ClusterStyle::Radio` |
+| `TStaticText` | `FieldKind::ReadOnly` |
+| `TLabel` + hotkey | `~X~` markers on **button** labels, matched via `FormEvent::Hotkey` |
+| `TListBox` + `TScrollBar` | the choice popup, which scrolls and draws a bar |
+| — | `FieldKind::Choice`, a dropdown Turbo Vision never had |
+
+Still owed, and deliberately: validators, `TMemo`, `THistory`.
+
+### Keys
+
+> The reasoning behind each of these, with precedents and costs, is recorded in
+> [`docs/ux-decisions.md`](../../ux-decisions.md). This section is a summary.
+
+Three traditions disagree about Enter, so a form is told which it belongs to
+via [`EnterReach`], defaulting to the conservative `OperateOnly`. Space is
+uniform under all of them and always operates the focused control, which is
+what keeps any of the three from feeling arbitrary.
+
+Enter opens a dropdown, following BIOS setup rather than Windows — highlight a
+setting, press Enter, get its value list. BIOS is also why clusters were not
+made the primary picker: BIOS setups have no clusters at all, having solved the
+same problem with a popup, which is what `Choice` already is.
+
+Arrows walk straight through a cluster rather than being trapped in it, and Tab
+skips the whole thing. Turbo Vision and Windows both trap, but only because an
+arrow inside a group *is* their choosing mechanism; arrows only move here, so
+the reason does not carry over.
+
+**A radio caret moves without choosing**, which native radio groups do not do.
+ARIA's radio pattern, HTML and Windows all move the selection with the caret,
+and APG is explicit that this is right when the result is "nearly
+instantaneous" — and wrong when choosing "causes a network request" or other
+real work, because arrowing through the group then does that work at every
+step. For multi-select APG requires Enter or Space outright.
+
+Choosing is never free here: a cluster emits its item's action to the host,
+which may reconfigure a display or write to flash, so arrowing past three
+options would do it three times. Requiring a keystroke also keeps the two
+cluster styles alike under the rule that Space always operates the focused
+control, and lets an assistive reader inspect an option without selecting it.
+
+Because caret and choice can then sit on different rows, the renderer marks
+them separately: the caret by the selection bar, the choice by the bullet.
+
+### Hotkeys are an inversion
+
+The host detects an accelerator and reports `FormEvent::Hotkey(char)`; the
+toolkit matches it, because only the form knows which field claimed the
+character and only it knows that a hotkey presses a button but merely focuses
+anything else.
+
+A host that cannot deliver hotkeys at all — an embedded keypad, a canvas that
+swallows modifiers — simply never emits it, and must also clear `Theme::hotkey`
+so that labels stop advertising an affordance nothing will honour. That
+requirement is what forced `render_themed` into existence: `Theme` had been
+unreachable, with `render_impl` hardcoding `Theme::DEFAULT` despite the type's
+own documentation promising that a skin could vary it.
 
 ## Deliberately out of scope
 
@@ -217,4 +300,9 @@ theme.
 
 ## Open items
 
-_None currently tracked._
+- **Validators.** Turbo Vision's `TValidator` family — range, picture, filter,
+  string-lookup — applied to an entry field. `Number` clamps to `min`/`max` and
+  nothing else validates.
+- **`TMemo`.** Multi-line text. The edit state machine is single-line
+  throughout, so this is a new field kind rather than a flag on `Text`.
+- **`THistory`.** A dropdown of previously entered values on an input line.

@@ -14,6 +14,8 @@ use alloc::vec::Vec;
 ///
 /// Three traditions disagree about this, and all three are coherent, so the
 /// form is told which one it belongs to rather than the toolkit picking.
+///
+/// The reasoning, and the precedent behind each, is in `docs/ux-decisions.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EnterReach {
     /// Enter only ever operates the focused control. Accepting the form means
@@ -43,9 +45,20 @@ pub enum EnterReach {
 pub enum ClusterStyle {
     /// One of N, drawn `( )` / `(•)`.
     ///
-    /// Moving the caret also moves the selection, which is what Windows and
-    /// Turbo Vision both do: in a radio group the caret *is* the choice, so
-    /// there is nothing to confirm afterwards.
+    /// The caret moves without choosing; Space or Enter chooses what it is on.
+    ///
+    /// Native radio groups do the opposite — ARIA's radio pattern, HTML, and
+    /// Windows all move the selection with the caret. That is right when
+    /// choosing is free, and APG says so explicitly: selection should follow
+    /// focus when the result is "nearly instantaneous", and should not when it
+    /// "causes a network request" or other real work, because arrowing through
+    /// the group then does that work at every step.
+    ///
+    /// Choosing is never free here. A cluster emits its item's action to the
+    /// host, which may reconfigure a display or write to flash — so arrowing
+    /// past three options would do it three times. Requiring a keystroke to
+    /// choose also keeps the two cluster styles behaving alike, and lets a
+    /// screen reader read an option without selecting it.
     Radio,
     /// Any of N, drawn `[ ]` / `[X]`. The caret moves independently and Space
     /// flips whatever it is on.
@@ -751,6 +764,7 @@ impl<A: Clone> FormState<A> {
                     return out;
                 }
                 self.step_row(-1);
+                self.enter_cluster_from(-1);
                 self.reselect_focused();
                 FormOutcome::nothing()
             }
@@ -759,6 +773,7 @@ impl<A: Clone> FormState<A> {
                     return out;
                 }
                 self.step_row(1);
+                self.enter_cluster_from(1);
                 self.reselect_focused();
                 FormOutcome::nothing()
             }
@@ -823,102 +838,126 @@ impl<A: Clone> FormState<A> {
         self.fields.get_mut(self.focus).map(|f| &mut f.kind)
     }
 
-    /// The field claiming `c` as its accelerator, if any.
+    /// The button claiming `c` as its accelerator, if any.
+    ///
+    /// **Only buttons claim accelerators.** Marking one in a field label or a
+    /// cluster item does nothing; the marker is stripped and the text renders
+    /// plainly.
+    ///
+    /// An accelerator invokes a command. Navigation is what Tab and the arrow
+    /// keys are for, and they need no namespace — whereas an accelerator on
+    /// every label collides constantly, because labels are domain words rather
+    /// than letters chosen to be distinct. A form with a `Sound` field and an
+    /// `OK` button has both claiming `o`, and first-match-wins silently makes
+    /// the button unreachable, which is exactly the accelerator worth having.
+    ///
+    /// Widening this later — to menu items, when there are menus — is
+    /// additive. Narrowing it would not be, which is why it starts narrow.
     ///
     /// Case-insensitive, because a host reporting Alt+O has no idea whether
-    /// the label spelled it `O` or `o`. Non-focusable fields are skipped: a
-    /// read-only row cannot take focus, so letting it claim a character would
-    /// silently swallow the accelerator.
-    fn hotkey_target(&self, c: char) -> Option<(usize, Option<usize>)> {
+    /// the label spelled it `O` or `o`.
+    fn hotkey_target(&self, c: char) -> Option<usize> {
         let wanted = c.to_ascii_lowercase();
-        let matches =
-            |claimed: Option<char>| claimed.map(|m| m.to_ascii_lowercase()) == Some(wanted);
-        for (i, f) in self.fields.iter().enumerate() {
+        self.fields.iter().position(|f| {
             if !f.focusable() {
-                continue;
+                return false;
             }
-            // A cluster's items each claim their own accelerator, as Turbo
-            // Vision's did, so a hotkey picks the item rather than merely the
-            // group it belongs to.
-            if let FieldKind::Cluster { items, .. } = &f.kind {
-                if let Some(item) = items.iter().position(|it| matches(mnemonic_of(&it.label))) {
-                    return Some((i, Some(item)));
+            match &f.kind {
+                FieldKind::Button { label, .. } => {
+                    mnemonic_of(label).map(|m| m.to_ascii_lowercase()) == Some(wanted)
                 }
+                _ => false,
             }
-            // A button carries its accelerator in its own label; every other
-            // field carries it in the label beside it.
-            let claimed = match &f.kind {
-                FieldKind::Button { label, .. } => mnemonic_of(label),
-                _ => mnemonic_of(f.label),
+        })
+    }
+
+    /// Every accelerator claimed more than once.
+    ///
+    /// A form claiming one letter twice has a bug in it, and only its author
+    /// can fix it — so this exists to be asserted on in their tests rather
+    /// than discovered by a user whose Alt+O does the wrong thing.
+    pub fn hotkey_conflicts(&self) -> Vec<char> {
+        let mut claimed: Vec<char> = Vec::new();
+        let mut dupes: Vec<char> = Vec::new();
+        for f in self.fields.iter().filter(|f| f.focusable()) {
+            let FieldKind::Button { label, .. } = &f.kind else {
+                continue;
             };
-            if matches(claimed) {
-                return Some((i, None));
+            let Some(m) = mnemonic_of(label).map(|m| m.to_ascii_lowercase()) else {
+                continue;
+            };
+            if claimed.contains(&m) {
+                if !dupes.contains(&m) {
+                    dupes.push(m);
+                }
+            } else {
+                claimed.push(m);
             }
         }
-        None
+        dupes
     }
 
     /// Focus the field claiming `c` — and, if it is a button, press it.
     ///
     /// That split is the CUA rule: an accelerator on a button activates it,
     /// while one on any other control only moves focus there.
+    /// Press the button claiming `c`.
     fn on_hotkey(&mut self, c: char) -> FormOutcome<A> {
-        let Some((target, item)) = self.hotkey_target(c) else {
+        let Some(target) = self.hotkey_target(c) else {
             return FormOutcome::nothing();
         };
         self.focus = target;
-        self.reselect_focused();
-
-        // An accelerator aimed at a cluster item puts the caret on it and
-        // operates it, which is the whole point of marking it.
-        if let Some(item) = item {
-            if let Some(FieldKind::Cluster { cursor, .. }) =
-                self.fields.get_mut(target).map(|f| &mut f.kind)
-            {
-                *cursor = item;
-            }
-            return self.cluster_activate().unwrap_or_else(FormOutcome::nothing);
-        }
-
-        if matches!(self.fields[target].kind, FieldKind::Button { .. }) {
-            self.activate()
-        } else {
-            FormOutcome::nothing()
-        }
+        self.press_button(target)
     }
 
-    /// Move the caret inside the focused cluster, if that is where focus is.
+    /// Move the caret within the focused cluster.
     ///
-    /// Returns whether the cluster consumed the movement. It always does when
-    /// focus is on one: arrows are trapped inside a cluster and Tab is the way
-    /// out, which is what both Turbo Vision and Windows do.
+    /// Returns `None` when the move would leave the cluster, so the caller
+    /// steps to the next field instead — arrows walk the form's rows straight
+    /// through a cluster rather than being trapped in it.
+    ///
+    /// Turbo Vision and Windows both trap here, but for a reason that does not
+    /// apply: in both, an arrow key inside a group *is* the choosing
+    /// mechanism, which is why the group has to own the key. Arrows only move
+    /// here (see [`ClusterStyle::Radio`]), and a key that only moves has no
+    /// business stopping at a boundary the user cannot see a reason for.
+    /// Turbo Vision's trapping was also an artifact of a cluster being one
+    /// view in a `TGroup` tree, which this has no equivalent of.
     fn cluster_step(&mut self, delta: isize) -> Option<FormOutcome<A>> {
         let focus = self.focus;
-        let Some(FieldKind::Cluster {
-            style,
-            items,
-            cursor,
-        }) = self.fields.get_mut(focus).map(|f| &mut f.kind)
+        let Some(FieldKind::Cluster { items, cursor, .. }) =
+            self.fields.get_mut(focus).map(|f| &mut f.kind)
         else {
             return None;
         };
         if items.is_empty() {
-            return Some(FormOutcome::nothing());
+            return None;
         }
-        let n = items.len();
-        let next = (*cursor as isize + delta).rem_euclid(n as isize) as usize;
-        *cursor = next;
-
-        // A radio caret is the selection, so moving it chooses.
-        if *style == ClusterStyle::Radio {
-            for (i, item) in items.iter_mut().enumerate() {
-                item.on = i == next;
-            }
-            let action = items[next].on_action.clone();
-            self.mark_dirty(focus);
-            return Some(FormOutcome::action(action));
+        let next = *cursor as isize + delta;
+        if next < 0 || next >= items.len() as isize {
+            // At an edge: let the form move on to the next field.
+            return None;
         }
+        *cursor = next as usize;
         Some(FormOutcome::nothing())
+    }
+
+    /// Put a cluster's caret at the end the caret arrived from.
+    ///
+    /// Arrowing down into a cluster should land on its first item and arrowing
+    /// up on its last, so that continuing in the same direction continues to
+    /// feel like one list rather than jumping to wherever the caret last sat.
+    fn enter_cluster_from(&mut self, delta: isize) {
+        let focus = self.focus;
+        if let Some(FieldKind::Cluster { items, cursor, .. }) =
+            self.fields.get_mut(focus).map(|f| &mut f.kind)
+        {
+            *cursor = if delta > 0 {
+                0
+            } else {
+                items.len().saturating_sub(1)
+            };
+        }
     }
 
     /// Flip the item the focused cluster's caret is on.
@@ -2168,13 +2207,31 @@ mod tests {
     }
 
     #[test]
-    fn arrows_are_trapped_inside_a_cluster() {
+    fn arrows_walk_straight_through_a_cluster() {
+        // A key that only moves has no business stopping at a boundary, so
+        // arrows traverse the cluster's items and carry on to the next field.
         let mut f = cluster_form(ClusterStyle::Check);
         assert_eq!(f.focus(), 0);
-        for _ in 0..10 {
+        f.handle(FormEvent::Down); // item 1
+        f.handle(FormEvent::Down); // item 2
+        assert_eq!(f.focus(), 0, "still inside while there are items left");
+        assert_eq!(cluster_of(&f).0, 2);
+        f.handle(FormEvent::Down); // past the last item
+        assert_eq!(f.focus(), 1, "and out the far side");
+    }
+
+    #[test]
+    fn arrowing_back_into_a_cluster_lands_on_the_end_it_came_from() {
+        let mut f = cluster_form(ClusterStyle::Check);
+        // Out the bottom...
+        for _ in 0..3 {
             f.handle(FormEvent::Down);
         }
-        assert_eq!(f.focus(), 0, "arrows never leave the cluster");
+        assert_eq!(f.focus(), 1);
+        // ...and back up lands on the last item, not wherever the caret sat.
+        f.handle(FormEvent::Up);
+        assert_eq!(f.focus(), 0);
+        assert_eq!(cluster_of(&f).0, 2, "entered from below, so on the last");
     }
 
     #[test]
@@ -2185,26 +2242,69 @@ mod tests {
     }
 
     #[test]
-    fn a_cluster_caret_wraps_at_both_ends() {
+    fn a_cluster_caret_does_not_wrap_it_leaves() {
+        // Wrapping was a consequence of trapping; without the trap there is
+        // nothing to wrap against.
         let mut f = cluster_form(ClusterStyle::Check);
-        f.handle(FormEvent::Up);
-        assert_eq!(cluster_of(&f).0, 2, "up from the first item wraps to last");
-        f.handle(FormEvent::Down);
         assert_eq!(cluster_of(&f).0, 0);
+        f.handle(FormEvent::Up); // up from the first item
+        assert_ne!(f.focus(), 0, "left the cluster rather than wrapping");
     }
 
     #[test]
-    fn a_radio_caret_selects_as_it_moves() {
+    fn tab_still_skips_a_whole_cluster_rather_than_entering_it() {
+        let mut f = cluster_form(ClusterStyle::Check);
+        f.handle(FormEvent::Tab);
+        assert_eq!(f.focus(), 1, "Tab moves between fields, not within one");
+    }
+
+    #[test]
+    fn a_radio_caret_moves_without_choosing() {
+        // Choosing emits an action the host acts on, which may be expensive or
+        // irreversible, so arrowing past an option must not do it. See
+        // `ClusterStyle::Radio`.
         let mut f = cluster_form(ClusterStyle::Radio);
         let outcome = f.handle(FormEvent::Down);
         let (cursor, on) = cluster_of(&f);
-        assert_eq!(cursor, 1);
-        assert_eq!(on, alloc::vec![false, true, false], "exactly one is set");
+        assert_eq!(cursor, 1, "the caret moved");
         assert_eq!(
-            outcome.actions,
-            alloc::vec![TestOp::On],
-            "moving the caret is the choice, so it speaks"
+            on,
+            alloc::vec![true, false, false],
+            "but the choice did not follow it"
         );
+        assert!(outcome.actions.is_empty(), "and nothing was emitted");
+    }
+
+    #[test]
+    fn arrowing_across_a_radio_cluster_emits_nothing_at_all() {
+        // The whole point: three options must not mean three actions.
+        let mut f = cluster_form(ClusterStyle::Radio);
+        let mut emitted = 0;
+        for _ in 0..6 {
+            emitted += f.handle(FormEvent::Down).actions.len();
+        }
+        assert_eq!(emitted, 0);
+    }
+
+    #[test]
+    fn space_chooses_the_radio_item_the_caret_reached() {
+        let mut f = cluster_form(ClusterStyle::Radio);
+        f.handle(FormEvent::Down);
+        let outcome = f.handle(FormEvent::Char(' '));
+        assert_eq!(cluster_of(&f).1, alloc::vec![false, true, false]);
+        assert_eq!(outcome.actions, alloc::vec![TestOp::On]);
+    }
+
+    #[test]
+    fn a_radio_caret_and_its_choice_may_sit_on_different_rows() {
+        // Which is why the renderer marks them separately: the caret by the
+        // selection bar, the choice by the bullet.
+        let mut f = cluster_form(ClusterStyle::Radio);
+        f.handle(FormEvent::Down);
+        f.handle(FormEvent::Down);
+        let (cursor, on) = cluster_of(&f);
+        assert_eq!(cursor, 2);
+        assert_eq!(on, alloc::vec![true, false, false]);
     }
 
     #[test]
@@ -2260,27 +2360,6 @@ mod tests {
             "nothing to say, so nothing said"
         );
         assert_eq!(cluster_of(&f).1, alloc::vec![false, false, false]);
-    }
-
-    #[test]
-    fn a_cluster_item_can_be_reached_by_its_own_accelerator() {
-        let mut f = cluster_form(ClusterStyle::Check);
-        f.handle(FormEvent::Tab); // move to OK first
-        assert_eq!(f.focus(), 1);
-        let outcome = f.handle(FormEvent::Hotkey('m'));
-        assert_eq!(f.focus(), 0, "focus returns to the cluster");
-        let (cursor, on) = cluster_of(&f);
-        assert_eq!(cursor, 2, "and lands on the item that claimed it");
-        assert_eq!(on, alloc::vec![false, false, true], "which it also flips");
-        assert_eq!(outcome.actions, alloc::vec![TestOp::SetColor(3)]);
-    }
-
-    #[test]
-    fn a_radio_accelerator_chooses_its_item_outright() {
-        let mut f = cluster_form(ClusterStyle::Radio);
-        let outcome = f.handle(FormEvent::Hotkey('s'));
-        assert_eq!(cluster_of(&f).1, alloc::vec![false, true, false]);
-        assert_eq!(outcome.actions, alloc::vec![TestOp::On]);
     }
 
     fn role_form() -> FormState<TestOp> {
@@ -2418,21 +2497,61 @@ mod tests {
     }
 
     #[test]
-    fn a_hotkey_moves_focus_to_the_field_that_claimed_it() {
+    fn only_a_button_claims_an_accelerator() {
+        // `~S~ound` marks a letter, but a field label claims nothing: an
+        // accelerator invokes a command, and navigating to a field is what Tab
+        // is for. See `hotkey_target`.
         let mut f = hotkey_form();
         f.set_focus(1);
         let outcome = f.handle(FormEvent::Hotkey('s'));
-        assert_eq!(f.focus(), 0, "focus moved to the ~S~ound field");
-        // Focusing is all it does — a non-button must not be activated.
+        assert_eq!(f.focus(), 1, "focus did not move");
         assert!(outcome.actions.is_empty());
+    }
+
+    #[test]
+    fn a_field_label_no_longer_shadows_a_buttons_accelerator() {
+        // The bug this rule removes: `S~o~und` and `~O~K` both claimed `o`,
+        // first match won, and the button became unreachable — losing the one
+        // accelerator that does something Tab cannot.
+        let mut f = FormState::new(
+            "T",
+            alloc::vec![
+                Field {
+                    label: "S~o~und",
+                    kind: FieldKind::Toggle {
+                        on: false,
+                        on_action: TestOp::On,
+                        off_action: TestOp::Off,
+                    },
+                    restore: alloc::vec![TestOp::Off],
+                },
+                Field::ok(),
+            ],
+        );
+        let outcome = f.handle(FormEvent::Hotkey('o'));
+        assert!(outcome.close, "Alt+O reaches OK, not the Sound field");
     }
 
     #[test]
     fn a_hotkey_matches_regardless_of_case() {
         let mut f = hotkey_form();
-        f.set_focus(1);
-        f.handle(FormEvent::Hotkey('S'));
-        assert_eq!(f.focus(), 0);
+        let outcome = f.handle(FormEvent::Hotkey('O'));
+        assert!(outcome.close, "OK was pressed");
+    }
+
+    #[test]
+    fn duplicate_accelerators_are_reportable_so_a_form_can_test_for_them() {
+        let clean = hotkey_form();
+        assert!(clean.hotkey_conflicts().is_empty());
+
+        let clashing: FormState<TestOp> = FormState::new(
+            "T",
+            alloc::vec![
+                Field::button("~O~pen", ButtonRole::Stay, None),
+                Field::ok(), // also claims 'o'
+            ],
+        );
+        assert_eq!(clashing.hotkey_conflicts(), alloc::vec!['o']);
     }
 
     #[test]

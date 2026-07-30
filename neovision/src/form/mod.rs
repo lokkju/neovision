@@ -7,6 +7,4 @@ pub use model::{
     ButtonRole, ChoiceOption, ClusterItem, ClusterStyle, EnterReach, Field, FieldKind, FormEvent,
     FormOutcome, FormState, Popup,
 };
-pub use render::{render, render_themed, render_with_cursor, HotkeyAttrs, Theme};
-#[allow(deprecated)]
-pub use render::{FormTheme, HotkeyTheme};
+pub use render::{render, render_themed, render_with_cursor, HotkeyAttrs, Layout, Theme};

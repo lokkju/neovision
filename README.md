@@ -24,16 +24,22 @@ index.
 The same form through the `terminal` host, as `--dump` prints it:
 
 ```
-░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
 ░░░░░░░░░░░░░░░░░░░░╔════════  Display Settings  ═════════╗░░░░░░░░░░░░░░░░░░░░░
 ░░░░░░░░░░░░░░░░░░░░║ Theme         [Classic             ]║░░░░░░░░░░░░░░░░░░░░░
 ░░░░░░░░░░░░░░░░░░░░║ Scale         [2x                  ]║░░░░░░░░░░░░░░░░░░░░░
+░░░░░░░░░░░░░░░░░░░░║ Profile       [default             ]║░░░░░░░░░░░░░░░░░░░░░
+░░░░░░░░░░░░░░░░░░░░║ Video         (•) CGA               ║░░░░░░░░░░░░░░░░░░░░░
+░░░░░░░░░░░░░░░░░░░░║               ( ) EGA               ║░░░░░░░░░░░░░░░░░░░░░
+░░░░░░░░░░░░░░░░░░░░║               ( ) VGA               ║░░░░░░░░░░░░░░░░░░░░░
+░░░░░░░░░░░░░░░░░░░░║ Options       [X] Scanlines         ║░░░░░░░░░░░░░░░░░░░░░
+░░░░░░░░░░░░░░░░░░░░║               [ ] Blink             ║░░░░░░░░░░░░░░░░░░░░░
 ░░░░░░░░░░░░░░░░░░░░║ Sound         [Yes                 ]║░░░░░░░░░░░░░░░░░░░░░
 ░░░░░░░░░░░░░░░░░░░░║ Frame delay   [250  ]ms (0-9999)    ║░░░░░░░░░░░░░░░░░░░░░
 ░░░░░░░░░░░░░░░░░░░░║ Renderer      terminal (cp437)      ║░░░░░░░░░░░░░░░░░░░░░
 ░░░░░░░░░░░░░░░░░░░░╠═════════════════════════════════════╣░░░░░░░░░░░░░░░░░░░░░
-░░░░░░░░░░░░░░░░░░░░║       [  OK  ]    [ Cancel ]        ║░░░░░░░░░░░░░░░░░░░░░
+░░░░░░░░░░░░░░░░░░░░║       «  OK  »    [ Cancel ]        ║░░░░░░░░░░░░░░░░░░░░░
 ░░░░░░░░░░░░░░░░░░░░╚═════════════════════════════════════╝░░░░░░░░░░░░░░░░░░░░░
+░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
 ```
 
@@ -116,6 +122,13 @@ fn frame<A: Clone>(state: &mut FormState<A>, base: &CellBuffer, key: FormEvent) 
 }
 ```
 
+## Why it behaves as it does
+
+Keyboard behaviour in a text-mode form is a pile of small decisions, several of
+which depart from a dominant convention on purpose.
+[`docs/ux-decisions.md`](docs/ux-decisions.md) records each one with its
+reasoning, the precedent it follows or departs from, and what it costs.
+
 ## Generic over your actions
 
 `FormState<A>` carries values of *your* action type. It stores them, hands them
@@ -130,7 +143,7 @@ actually touched.
 ## Status
 
 Pre-1.0 and honest about it. The form widgets, the renderer, and the compositor
-are covered by 226 tests. The API will still move.
+are covered by 235 tests. The API will still move.
 
 Deliberately **not** implemented yet: Turbo Vision's `TGroup` / `TApplication`
 layer — a view tree, a desktop, stacked modal dialogs, z-ordered windows with
