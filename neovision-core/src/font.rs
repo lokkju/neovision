@@ -36,8 +36,11 @@
 /// Width of one glyph, in pixels. One byte per row, so this is always 8.
 pub const GLYPH_W: u16 = 8;
 
-/// Height of one glyph, in pixels.
+/// Height of a [`VGA_8X16`] glyph, in pixels.
 pub const GLYPH_H: u16 = 16;
+
+/// Height of a [`VGA_8X8`] glyph, in pixels.
+pub const GLYPH_H_8: u16 = 8;
 
 /// Every CP437 glyph as 16 rows of 8 bits, indexed by byte value.
 ///
@@ -57,6 +60,32 @@ pub static VGA_8X16: [[u8; GLYPH_H as usize]; 256] = {
     }
     out
 };
+
+/// The same repertoire at 8x8, for displays that cannot spare the rows.
+///
+/// A 320x240 panel fits 40x15 cells at 8x16 but 40x30 at 8x8, which is the
+/// difference between a form that fits and one that does not. The face is the
+/// squarer, blockier one the CGA and EGA ROMs carried, not a squashed 8x16.
+pub static VGA_8X8: [[u8; GLYPH_H_8 as usize]; 256] = {
+    let raw = *include_bytes!("vga_8x8.bin");
+    let mut out = [[0u8; GLYPH_H_8 as usize]; 256];
+    let mut ch = 0usize;
+    while ch < 256 {
+        let mut row = 0usize;
+        while row < GLYPH_H_8 as usize {
+            out[ch][row] = raw[ch * GLYPH_H_8 as usize + row];
+            row += 1;
+        }
+        ch += 1;
+    }
+    out
+};
+
+/// The 8x8 glyph for a CP437 byte.
+#[inline]
+pub fn glyph_8x8(ch: u8) -> &'static [u8; GLYPH_H_8 as usize] {
+    &VGA_8X8[ch as usize]
+}
 
 /// The glyph for a CP437 byte. Total — every byte has one.
 ///
@@ -84,6 +113,22 @@ pub fn pixel(ch: u8, x: u16, y: u16) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_small_face_covers_every_byte_at_its_own_size() {
+        assert_eq!(VGA_8X8.len(), 256);
+        assert_eq!(VGA_8X8[0].len(), GLYPH_H_8 as usize);
+    }
+
+    #[test]
+    fn the_small_face_is_a_different_face_not_a_squashed_one() {
+        // If it were derived by dropping rows from the 8x16 face, 'A' would
+        // share its crossbar row. It does not: it is the CGA/EGA ROM face.
+        assert_ne!(glyph_8x8(b'A')[..], VGA_8X16[b'A' as usize][..8]);
+        // ...but it is still recognisably CP437: space blank, block solid.
+        assert!(glyph_8x8(b' ').iter().all(|&r| r == 0x00));
+        assert!(glyph_8x8(0xDB).iter().all(|&r| r == 0xFF));
+    }
 
     #[test]
     fn the_table_covers_every_byte_at_the_declared_size() {

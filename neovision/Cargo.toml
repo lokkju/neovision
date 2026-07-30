@@ -35,6 +35,9 @@ minifb = "0.28"
 # framebuffer host already produces palette indices, so there is nothing to
 # quantize. `std` and `raii_no_panic` are the other two defaults and are needed.
 gif = { version = "0.14", default-features = false, features = ["std", "raii_no_panic"] }
+# The de-facto display abstraction for embedded Rust. no_std itself, so the
+# integration in examples/embedded.rs is the code a real device would ship.
+embedded-graphics = "0.8"
 
 [package.metadata.docs.rs]
 all-features = true
@@ -42,6 +45,11 @@ all-features = true
 [[example]]
 name = "terminal"
 path = "examples/terminal.rs"
+
+[[example]]
+name = "embedded"
+path = "examples/embedded.rs"
+required-features = ["font"]
 
 [[example]]
 name = "framebuffer"

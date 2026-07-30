@@ -45,6 +45,9 @@ cargo run --example terminal -- --dump  # render one frame as text, no TTY
 
 cargo run --example framebuffer              # a pixel window
 cargo run --example framebuffer -- --single  # write one PPM
+
+cargo run --example embedded                 # a simulated 320x240 TFT
+cargo run --example embedded -- --single     # write one PPM
 ```
 
 ## The crates
@@ -54,7 +57,7 @@ cargo run --example framebuffer -- --single  # write one PPM
 | [`neovision`](https://docs.rs/neovision) | The widget toolkit: forms, fields, the CUA renderer. Re-exports `neovision-core`. |
 | [`neovision-core`](https://docs.rs/neovision-core) | The substrate: cells, layers, the compositor, CP437, geometry. Zero dependencies. |
 
-`neovision` bundles the IBM VGA 8x16 face by default, so a pixel host can draw
+`neovision` bundles the IBM VGA faces — 8x16 and 8x8 — by default, so a pixel host can draw
 without hunting for a font. It comes from `neovision-core`'s `font` feature,
 which is off *there* by default — the substrate stays minimal for anyone
 counting bytes. A build that cannot spare the 4 KiB takes
@@ -66,10 +69,16 @@ opinion about widgets.
 
 ## Writing a host
 
-A host owes the toolkit three things, and nothing else. There are two complete
-ones to read: `examples/terminal.rs` hands cells to a terminal, and
-`examples/framebuffer.rs` rasterizes every pixel itself the way a canvas, an
-embedded display, or a real VESA mode would. Both are mostly comments.
+A host owes the toolkit three things, and nothing else. There are three
+complete ones to read:
+
+| example | what it drives |
+|---|---|
+| `terminal.rs` | hands cells to a terminal via crossterm |
+| `framebuffer.rs` | rasterizes every pixel itself, the way a canvas or a real VESA mode would |
+| `embedded.rs` | draws through `embedded-graphics`' `DrawTarget`, so the same code runs against a real ILI9341 or ST7789 |
+
+All three are mostly comments.
 
 Each has a headless mode that renders without a display — `--dump` for the
 terminal host, `--single` for the framebuffer one — so what they draw is
@@ -121,7 +130,7 @@ actually touched.
 ## Status
 
 Pre-1.0 and honest about it. The form widgets, the renderer, and the compositor
-are covered by 153 tests. The API will still move.
+are covered by 226 tests. The API will still move.
 
 Deliberately **not** implemented yet: Turbo Vision's `TGroup` / `TApplication`
 layer — a view tree, a desktop, stacked modal dialogs, z-ordered windows with
