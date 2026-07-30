@@ -44,9 +44,13 @@ extern crate alloc;
 pub mod form;
 
 pub use form::{
-    render, render_themed, render_with_cursor, ButtonKind, ChoiceOption, Field, FieldKind,
-    FormEvent, FormOutcome, FormState, FormTheme, HotkeyTheme, Popup,
+    render, render_themed, render_with_cursor, ButtonRole, ChoiceOption, Field, FieldKind,
+    FormEvent, FormOutcome, FormState, HotkeyAttrs, Popup, Theme,
 };
+
+/// Former names, kept so a 0.1.0 dependant gets a warning rather than a break.
+#[allow(deprecated)]
+pub use form::{FormTheme, HotkeyTheme};
 
 /// The character-cell substrate neovision renders onto.
 pub use neovision_core;

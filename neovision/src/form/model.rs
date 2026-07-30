@@ -10,32 +10,20 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-/// Which button a [`FieldKind::Button`] is.
+/// What pressing a button does to the form.
+///
+/// The distinction Ok and Cancel actually encoded was never their labels — it
+/// was this. Naming it lets a form have "Save", "Discard" and "Help" without
+/// pretending two of them are OK and Cancel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ButtonKind {
-    Ok,
-    Cancel,
-}
-
-impl ButtonKind {
-    /// The text drawn inside the button's brackets.
-    pub fn label(self) -> &'static str {
-        match self {
-            ButtonKind::Ok => "OK",
-            ButtonKind::Cancel => "Cancel",
-        }
-    }
-
-    /// The accelerator a built-in button answers to.
-    ///
-    /// Implicit rather than marked, because these two labels are fixed. Field
-    /// kinds whose text the caller chooses declare theirs with `~X~` instead.
-    pub fn mnemonic(self) -> char {
-        match self {
-            ButtonKind::Ok => 'O',
-            ButtonKind::Cancel => 'C',
-        }
-    }
+pub enum ButtonRole {
+    /// Close, keeping what the user changed. What OK does.
+    Accept,
+    /// Close, replaying the restore actions of every field the user touched.
+    /// What Cancel does, and what Escape does.
+    Reject,
+    /// Emit the action and leave the form open — Apply, Help, Reset.
+    Stay,
 }
 
 /// One selectable value of a [`FieldKind::Choice`].
@@ -278,7 +266,16 @@ pub enum FieldKind<A> {
     },
     /// A derived value, shown but not editable. Skipped by focus traversal.
     ReadOnly(String),
-    Button(ButtonKind),
+    /// A push button.
+    ///
+    /// Its `label` may mark an accelerator with `~X~`, exactly as a field
+    /// label does — there is no separate mechanism for buttons.
+    Button {
+        label: &'static str,
+        role: ButtonRole,
+        /// Emitted when pressed, before the form closes if it is going to.
+        action: Option<A>,
+    },
 }
 
 /// A labelled field.
@@ -302,6 +299,51 @@ pub struct Field<A> {
 }
 
 impl<A> Field<A> {
+    /// The standard accepting button: closes the form, keeping changes.
+    ///
+    /// Its label marks `O` as the accelerator, as CUA dialogs always have.
+    pub fn ok() -> Self {
+        Self {
+            label: "",
+            kind: FieldKind::Button {
+                label: "~O~K",
+                role: ButtonRole::Accept,
+                action: None,
+            },
+            restore: Vec::new(),
+        }
+    }
+
+    /// The standard rejecting button: closes the form, restoring every field
+    /// the user changed — the same thing Escape does.
+    pub fn cancel() -> Self {
+        Self {
+            label: "",
+            kind: FieldKind::Button {
+                label: "~C~ancel",
+                role: ButtonRole::Reject,
+                action: None,
+            },
+            restore: Vec::new(),
+        }
+    }
+
+    /// A button with the caller's own label, role and action.
+    ///
+    /// Mark its accelerator in `label` with `~X~`, exactly as for a field
+    /// label — buttons have no separate mechanism.
+    pub fn button(label: &'static str, role: ButtonRole, action: Option<A>) -> Self {
+        Self {
+            label: "",
+            kind: FieldKind::Button {
+                label,
+                role,
+                action,
+            },
+            restore: Vec::new(),
+        }
+    }
+
     /// False for [`FieldKind::ReadOnly`], which focus traversal skips.
     pub fn focusable(&self) -> bool {
         !matches!(self.kind, FieldKind::ReadOnly(_))
@@ -358,7 +400,7 @@ pub enum FormEvent {
     /// which field claimed the character, and only it knows the CUA rule that
     /// a hotkey on a button presses it while one on any other field focuses
     /// it. Hosts that cannot offer hotkeys should also clear
-    /// [`FormTheme::hotkey`](crate::FormTheme::hotkey), so labels stop
+    /// [`Theme::hotkey`](crate::Theme::hotkey), so labels stop
     /// advertising them.
     Hotkey(char),
 }
@@ -469,7 +511,7 @@ impl<A> FormState<A> {
     fn focus_rows(&self) -> Vec<Vec<usize>> {
         let n = self.fields.len();
         let mut btn_start = n;
-        while btn_start > 0 && matches!(self.fields[btn_start - 1].kind, FieldKind::Button(_)) {
+        while btn_start > 0 && matches!(self.fields[btn_start - 1].kind, FieldKind::Button { .. }) {
             btn_start -= 1;
         }
         let mut rows = Vec::new();
@@ -589,11 +631,17 @@ impl<A: Clone> FormState<A> {
         }
     }
 
-    /// Index of the first OK button, if the form has one.
+    /// Index of the first accepting button, if the form has one.
     fn ok_button(&self) -> Option<usize> {
-        self.fields
-            .iter()
-            .position(|f| matches!(f.kind, FieldKind::Button(ButtonKind::Ok)))
+        self.fields.iter().position(|f| {
+            matches!(
+                f.kind,
+                FieldKind::Button {
+                    role: ButtonRole::Accept,
+                    ..
+                }
+            )
+        })
     }
 
     /// Feed one event. Returns the actions to apply and whether to close.
@@ -684,8 +732,10 @@ impl<A: Clone> FormState<A> {
             if !f.focusable() {
                 return false;
             }
+            // A button carries its accelerator in its own label; every other
+            // field carries it in the label beside it.
             let claimed = match &f.kind {
-                FieldKind::Button(kind) => Some(kind.mnemonic()),
+                FieldKind::Button { label, .. } => mnemonic_of(label),
                 _ => mnemonic_of(f.label),
             };
             claimed.map(|m| m.to_ascii_lowercase()) == Some(wanted)
@@ -702,7 +752,7 @@ impl<A: Clone> FormState<A> {
         };
         self.focus = target;
         self.reselect_focused();
-        if matches!(self.fields[target].kind, FieldKind::Button(_)) {
+        if matches!(self.fields[target].kind, FieldKind::Button { .. }) {
             self.activate()
         } else {
             FormOutcome::nothing()
@@ -901,9 +951,27 @@ impl<A: Clone> FormState<A> {
                     FormOutcome::action(commit(clamped))
                 }
             }
-            Some(FieldKind::Button(ButtonKind::Ok)) => FormOutcome::closing(Vec::new()),
-            Some(FieldKind::Button(ButtonKind::Cancel)) => {
-                FormOutcome::closing(self.cancel_actions())
+            Some(FieldKind::Button { role, action, .. }) => {
+                let role = *role;
+                let emitted = action.clone();
+                let mut actions = Vec::new();
+                if let Some(a) = emitted {
+                    actions.push(a);
+                }
+                match role {
+                    // Accept keeps what the user changed, so nothing is
+                    // replayed on the way out.
+                    ButtonRole::Accept => FormOutcome::closing(actions),
+                    ButtonRole::Reject => {
+                        actions.extend(self.cancel_actions());
+                        FormOutcome::closing(actions)
+                    }
+                    // Apply, Help, Reset: say something and stay put.
+                    ButtonRole::Stay => FormOutcome {
+                        actions,
+                        close: false,
+                    },
+                }
             }
             Some(FieldKind::ReadOnly(_)) | None => FormOutcome::nothing(),
         };
@@ -1062,12 +1130,20 @@ mod tests {
             },
             Field {
                 label: "",
-                kind: FieldKind::Button(ButtonKind::Ok),
+                kind: FieldKind::Button {
+                    label: "~O~K",
+                    role: ButtonRole::Accept,
+                    action: None
+                },
                 restore: Vec::new(),
             },
             Field {
                 label: "",
-                kind: FieldKind::Button(ButtonKind::Cancel),
+                kind: FieldKind::Button {
+                    label: "~C~ancel",
+                    role: ButtonRole::Reject,
+                    action: None
+                },
                 restore: Vec::new(),
             },
         ]
@@ -1306,7 +1382,11 @@ mod tests {
                 },
                 Field {
                     label: "",
-                    kind: FieldKind::Button(ButtonKind::Ok),
+                    kind: FieldKind::Button {
+                        label: "~O~K",
+                        role: ButtonRole::Accept,
+                        action: None
+                    },
                     restore: Vec::new()
                 },
             ],
@@ -1345,7 +1425,11 @@ mod tests {
                 },
                 Field {
                     label: "",
-                    kind: FieldKind::Button(ButtonKind::Ok),
+                    kind: FieldKind::Button {
+                        label: "~O~K",
+                        role: ButtonRole::Accept,
+                        action: None
+                    },
                     restore: Vec::new()
                 },
             ],
@@ -1549,7 +1633,11 @@ mod tests {
                 },
                 Field {
                     label: "",
-                    kind: FieldKind::Button(ButtonKind::Cancel),
+                    kind: FieldKind::Button {
+                        label: "~C~ancel",
+                        role: ButtonRole::Reject,
+                        action: None
+                    },
                     restore: Vec::new(),
                 },
             ],
@@ -1585,6 +1673,94 @@ mod tests {
         assert_eq!(text.chars().count(), 4, "tildes must not be drawn");
     }
 
+    fn role_form() -> FormState<TestOp> {
+        FormState::new(
+            "T",
+            alloc::vec![
+                Field {
+                    label: "T",
+                    kind: FieldKind::Toggle {
+                        on: false,
+                        on_action: TestOp::On,
+                        off_action: TestOp::Off,
+                    },
+                    restore: alloc::vec![TestOp::Off],
+                },
+                Field::button("~A~pply", ButtonRole::Stay, Some(TestOp::A)),
+                Field::ok(),
+                Field::cancel(),
+            ],
+        )
+    }
+
+    #[test]
+    fn a_stay_button_emits_its_action_without_closing() {
+        let mut f = role_form();
+        let outcome = f.handle(FormEvent::Hotkey('a'));
+        assert_eq!(outcome.actions, alloc::vec![TestOp::A]);
+        assert!(!outcome.close, "Apply stays put");
+    }
+
+    #[test]
+    fn an_accept_button_closes_without_replaying_anything() {
+        let mut f = role_form();
+        f.handle(FormEvent::Enter); // flip the toggle, making it dirty
+        let outcome = f.handle(FormEvent::Hotkey('o'));
+        assert!(outcome.close);
+        assert!(
+            !outcome.actions.contains(&TestOp::Off),
+            "Accept keeps the change rather than restoring it"
+        );
+    }
+
+    #[test]
+    fn a_reject_button_closes_and_restores_what_was_touched() {
+        let mut f = role_form();
+        f.handle(FormEvent::Enter); // flip the toggle, making it dirty
+        let outcome = f.handle(FormEvent::Hotkey('c'));
+        assert!(outcome.close);
+        assert!(
+            outcome.actions.contains(&TestOp::Off),
+            "Reject replays the restore action of the field that changed"
+        );
+    }
+
+    #[test]
+    fn a_buttons_own_action_is_emitted_before_any_restore() {
+        let mut f = FormState::new(
+            "T",
+            alloc::vec![
+                Field {
+                    label: "T",
+                    kind: FieldKind::Toggle {
+                        on: false,
+                        on_action: TestOp::On,
+                        off_action: TestOp::Off,
+                    },
+                    restore: alloc::vec![TestOp::Off],
+                },
+                Field::button("~D~iscard", ButtonRole::Reject, Some(TestOp::A)),
+            ],
+        );
+        f.handle(FormEvent::Enter); // dirty the toggle
+        let outcome = f.handle(FormEvent::Hotkey('d'));
+        assert_eq!(
+            outcome.actions.first(),
+            Some(&TestOp::A),
+            "the button speaks first, then the restores follow"
+        );
+        assert!(outcome.actions.contains(&TestOp::Off));
+    }
+
+    #[test]
+    fn a_custom_button_claims_the_accelerator_marked_in_its_own_label() {
+        let mut f = role_form();
+        // 'p' is not marked; ~A~pply claims 'a'.
+        let outcome = f.handle(FormEvent::Hotkey('p'));
+        assert!(outcome.actions.is_empty());
+        assert!(!outcome.close);
+    }
+
     fn hotkey_form() -> FormState<TestOp> {
         FormState::new(
             "T",
@@ -1609,12 +1785,20 @@ mod tests {
                 },
                 Field {
                     label: "",
-                    kind: FieldKind::Button(ButtonKind::Ok),
+                    kind: FieldKind::Button {
+                        label: "~O~K",
+                        role: ButtonRole::Accept,
+                        action: None
+                    },
                     restore: alloc::vec![],
                 },
                 Field {
                     label: "",
-                    kind: FieldKind::Button(ButtonKind::Cancel),
+                    kind: FieldKind::Button {
+                        label: "~C~ancel",
+                        role: ButtonRole::Reject,
+                        action: None
+                    },
                     restore: alloc::vec![],
                 },
             ],
@@ -1695,7 +1879,11 @@ mod tests {
                 },
                 Field {
                     label: "",
-                    kind: FieldKind::Button(ButtonKind::Ok),
+                    kind: FieldKind::Button {
+                        label: "~O~K",
+                        role: ButtonRole::Accept,
+                        action: None
+                    },
                     restore: alloc::vec![],
                 },
             ],
@@ -1870,7 +2058,11 @@ mod tests {
                 },
                 Field {
                     label: "",
-                    kind: FieldKind::Button(ButtonKind::Ok),
+                    kind: FieldKind::Button {
+                        label: "~O~K",
+                        role: ButtonRole::Accept,
+                        action: None
+                    },
                     restore: Vec::new()
                 },
             ],
@@ -1967,7 +2159,16 @@ mod tests {
         let ok_index = f
             .fields()
             .iter()
-            .position(|fld| matches!(fld.kind, FieldKind::Button(ButtonKind::Ok)))
+            .position(|fld| {
+                matches!(
+                    fld.kind,
+                    FieldKind::Button {
+                        label: "~O~K",
+                        role: ButtonRole::Accept,
+                        action: None
+                    }
+                )
+            })
             .expect("form has an OK button");
         let out = f.handle(FormEvent::Enter);
         assert!(out.actions.is_empty(), "unchanged value emits no action");

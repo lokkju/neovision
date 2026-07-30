@@ -35,8 +35,8 @@ use crossterm::{
 
 use neovision::neovision_core::cp437;
 use neovision::{
-    render_with_cursor, ButtonKind, Cell, CellBuffer, CellDraw, ChoiceOption, CursorShape, Field,
-    FieldKind, FormEvent, FormState, FormTheme, LayerStack, Point, Size, TextCursor,
+    render_with_cursor, Cell, CellBuffer, CellDraw, ChoiceOption, CursorShape, Field, FieldKind,
+    FormEvent, FormState, LayerStack, Point, Size, TextCursor, Theme,
 };
 
 /// What this demo's form can ask for.
@@ -159,7 +159,7 @@ fn paint(
     out: &mut impl Write,
     buf: &CellBuffer,
     cursor: Option<TextCursor>,
-    theme: FormTheme,
+    theme: Theme,
 ) -> io::Result<()> {
     queue!(out, Hide)?;
 
@@ -295,16 +295,8 @@ fn demo_form() -> FormState<Action> {
                 kind: FieldKind::ReadOnly("terminal (cp437)".to_string()),
                 restore: vec![],
             },
-            Field {
-                label: "",
-                kind: FieldKind::Button(ButtonKind::Ok),
-                restore: vec![],
-            },
-            Field {
-                label: "",
-                kind: FieldKind::Button(ButtonKind::Cancel),
-                restore: vec![],
-            },
+            Field::ok(),
+            Field::cancel(),
         ],
     )
 }
@@ -462,7 +454,7 @@ fn run(stdout: &mut impl Write) -> io::Result<Vec<Action>> {
         };
 
         let (composed, cursor) = compose(&state, screen, &status);
-        paint(stdout, &composed, cursor, FormTheme::DEFAULT)?;
+        paint(stdout, &composed, cursor, Theme::DEFAULT)?;
 
         match event::read()? {
             Event::Resize(w, h) => {
