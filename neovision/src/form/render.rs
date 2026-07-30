@@ -42,10 +42,16 @@ pub struct FormTheme {
     /// but deliberately not colour — so that drawing it cannot overwrite the
     /// glyph underneath.
     ///
-    /// A host whose skin wants the caret in a specific colour reads this one.
-    /// A host that simply inverts the cell beneath the caret does not need it:
-    /// that is what [`CursorShape::Overtype`] describes, and what VGA hardware
-    /// does, drawing the cursor in the character's own foreground colour.
+    /// The **foreground nibble is the caret colour**; the background nibble is
+    /// unused, since a caret is drawn over a cell that already has one. It must
+    /// contrast against [`selected`](Self::selected), not against
+    /// [`normal`](Self::normal): a caret only ever appears on the focused row,
+    /// which is painted in the selection attribute.
+    ///
+    /// A host is free to ignore this and derive the colour from the cell
+    /// instead — which is what [`CursorShape::Overtype`] prescribes with its
+    /// reverse video, and what VGA hardware does, drawing the cursor in the
+    /// character's own foreground colour.
     pub cursor: u8,
     /// The whole-value selection highlight of a selected Number field. Reverse
     /// of the focused row bar (0x71) so selected digits read as a highlight
@@ -57,12 +63,16 @@ impl FormTheme {
     /// CUA convention: light grey on blue, inverted for the selection bar,
     /// bright white values and a yellow title accent.
     pub const DEFAULT: FormTheme = FormTheme {
-        normal: 0x17,    // light grey on blue
-        value: 0x1F,     // bright white on blue
-        selected: 0x71,  // blue on light grey
-        dim: 0x18,       // dark grey on blue
-        title: 0x1E,     // bright yellow on blue
-        cursor: 0x1F,    // bright white block
+        normal: 0x17,   // light grey on blue
+        value: 0x1F,    // bright white on blue
+        selected: 0x71, // blue on light grey
+        dim: 0x18,      // dark grey on blue
+        title: 0x1E,    // bright yellow on blue
+        // Black caret. It has to contrast against `selected`'s light-grey bar,
+        // which is the only background a caret is ever drawn on — a bright
+        // caret reads well against the blue panel and then vanishes on the
+        // focused row, which is the one place it actually appears.
+        cursor: 0x70,
         selection: 0x17, // grey-on-blue: reverse of the 0x71 focused row bar
     };
 }
