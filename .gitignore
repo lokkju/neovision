@@ -1,0 +1,6 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# Machine-local Claude Code settings; the shared ones live in settings.json.
+.claude/settings.local.json

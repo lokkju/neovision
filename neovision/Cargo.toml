@@ -1,0 +1,26 @@
+[package]
+name = "neovision"
+description = "A CUA / Turbo-Vision-style modal-form widget toolkit for character-cell text UIs. Renderer-agnostic and no_std; emits cell buffers a host rasterizes anywhere."
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+neovision-core = { workspace = true }
+
+[dev-dependencies]
+crossterm = "0.28"
+
+[[example]]
+name = "terminal"
+path = "examples/terminal.rs"

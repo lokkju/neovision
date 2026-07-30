@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = ["neovision-core", "neovision"]
+
+[workspace.package]
+version = "0.1.0"
+authors = ["Loki Coyote <lokkju@gmail.com>"]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/lokkju/neovision"
+homepage = "https://github.com/lokkju/neovision"
+readme = "README.md"
+keywords = ["tui", "text-mode", "cp437", "no-std", "retro"]
+categories = ["command-line-interface", "no-std", "gui", "rendering"]
+rust-version = "1.76"
+
+[workspace.dependencies]
+neovision-core = { version = "0.1.0", path = "neovision-core" }
+
+[profile.release]
+opt-level = 2
+
+# Optimize dependencies even in debug builds so the examples stay responsive.
+[profile.dev.package."*"]
+opt-level = 2

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+#MISE description="Run the terminal demo (pass --dump to render one frame as text)"
+#USAGE flag "--dump" help="Render a single frame to stdout and exit, no TTY needed"
+set -euo pipefail
+
+if [ "${usage_dump:-false}" = "true" ]; then
+    exec cargo run --example terminal -- --dump
+fi
+exec cargo run --example terminal

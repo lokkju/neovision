@@ -1,0 +1,8 @@
+[tools]
+rust = "1.95"
+"cargo:release-plz" = "0.3.160"
+"cargo:git-cliff" = "2.13.1"
+
+[env]
+# Keep the MSRV in one place; the `msrv` task and CI both read it.
+NEOVISION_MSRV = "1.76"

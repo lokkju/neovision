@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+#MISE description="Verify the declared MSRV still builds the workspace"
+set -euo pipefail
+
+msrv="${NEOVISION_MSRV:?NEOVISION_MSRV must be set}"
+echo "Checking MSRV ${msrv}..."
+rustup toolchain install "${msrv}" --profile minimal --no-self-update
+# Libraries only: the demo pulls in crossterm, whose own MSRV is its business.
+cargo "+${msrv}" check -p neovision-core -p neovision --lib

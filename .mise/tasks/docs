@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Build the API docs, failing on broken intra-doc links"
+set -euo pipefail
+
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps "$@"
