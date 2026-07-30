@@ -674,8 +674,7 @@ fn push_popup<A>(
     }
 
     let widest = options.iter().map(|o| o.label.len()).max().unwrap_or(0) as u16;
-    let inner_w = widest.max(4).min(screen.w.saturating_sub(4));
-    let w = inner_w + 2;
+    let inner_w = widest.max(4).min(screen.w.saturating_sub(5));
 
     // Sit under the field, then clamp so the popup stays on screen.
     let y = (panel.top() + popup.field as u16 + 2).min(screen.h.saturating_sub(3));
@@ -686,7 +685,13 @@ fn push_popup<A>(
     if max_rows < 3 {
         return;
     }
-    let visible = options.len().min((max_rows - 2) as usize);
+    // Sizing has to know whether a scrollbar is coming, because the bar gets
+    // a column of its own inside the frame rather than eating the border.
+    let without_bar = options.len().min((max_rows - 2) as usize);
+    let needs_bar = options.len() > without_bar;
+    let bar_w = if needs_bar { 1 } else { 0 };
+    let visible = without_bar;
+    let w = inner_w + 2 + bar_w;
     let h = visible as u16 + 2;
     let x = (panel.left() + LABEL_W).min(screen.w.saturating_sub(w));
 
@@ -720,7 +725,88 @@ fn push_popup<A>(
         );
         list.write_str(Point::new(1, y), &opt.label, attr);
     }
+
+    if needs_bar {
+        // One column in from the right border, so the frame stays closed.
+        draw_scrollbar(&mut list, w - 2, visible, options.len(), first, theme);
+    }
     layers.push(list);
+}
+
+/// Draw a vertical scrollbar down the list's right border.
+///
+/// Nothing is drawn when the whole list fits: a bar that is always full says
+/// only that there is nothing to scroll, which the absence of a bar says more
+/// quietly. Turbo Vision always drew one; this draws it only when it means
+/// something, and widens the popup to make room rather than spending the
+/// right border on it.
+///
+/// The thumb is placed by proportion and always occupies at least one cell, so
+/// a very long list still shows where it is rather than rounding away to
+/// nothing.
+fn draw_scrollbar(
+    list: &mut Layer,
+    x: u16,
+    visible: usize,
+    total: usize,
+    first: usize,
+    theme: Theme,
+) {
+    if total <= visible || visible == 0 {
+        return;
+    }
+    let track_h = visible as u16;
+
+    // Arrow caps sit on the frame corners' inner neighbours.
+    list.put(
+        x,
+        1,
+        Cell {
+            ch: 0x1E, // CP437 up triangle
+            attr: theme.normal,
+        },
+    );
+    list.put(
+        x,
+        track_h,
+        Cell {
+            ch: 0x1F, // CP437 down triangle
+            attr: theme.normal,
+        },
+    );
+
+    // The track between the caps, if there is any room for one.
+    if track_h < 3 {
+        return;
+    }
+    let inner_h = track_h - 2;
+    for row in 0..inner_h {
+        list.put(
+            x,
+            2 + row,
+            Cell {
+                // Medium shade, not light: the desktop behind a popup is
+                // filled with light shade, and a track drawn in the same
+                // glyph reads as a hole in the frame rather than as a track.
+                ch: 0xB1,
+                attr: theme.normal,
+            },
+        );
+    }
+
+    // Thumb position by proportion of how far `first` is through the range of
+    // possible scroll offsets.
+    let max_first = total - visible;
+    let span = inner_h.saturating_sub(1) as usize;
+    let thumb = (first * span).checked_div(max_first).unwrap_or(0) as u16;
+    list.put(
+        x,
+        2 + thumb.min(inner_h.saturating_sub(1)),
+        Cell {
+            ch: 0xDB, // solid block: the thumb
+            attr: theme.normal,
+        },
+    );
 }
 
 #[cfg(test)]
@@ -1073,6 +1159,140 @@ mod tests {
         let field_row = find_row(&buf, "Colour").expect("field row");
         let green = find_row(&buf, "Green").expect("popup lists the unselected option");
         assert!(green > field_row, "the popup sits below its field");
+    }
+
+    /// A form whose single field is a Choice with `n` options.
+    fn long_choice(n: usize) -> FormState<TestOp> {
+        let options: Vec<ChoiceOption<TestOp>> = (0..n)
+            .map(|i| ChoiceOption {
+                label: alloc::format!("Option {i}"),
+                action: TestOp::A,
+            })
+            .collect();
+        FormState::new(
+            "LONG",
+            alloc::vec![Field {
+                label: "Many",
+                kind: FieldKind::Choice {
+                    options,
+                    selected: Some(0)
+                },
+                restore: Vec::new(),
+            }],
+        )
+    }
+
+    /// Every cell of the popup's right border column, top to bottom.
+    fn scrollbar_column(buf: &CellBuffer) -> alloc::vec::Vec<u8> {
+        // The popup is the only single-line box on screen; find its right
+        // edge by looking for the arrow caps the scrollbar draws.
+        // The bar's own glyphs: up arrow, down arrow, track, thumb. Walking
+        // by these rather than to a frame corner keeps the helper correct now
+        // that the bar sits inside the frame rather than replacing its edge.
+        const BAR: [u8; 4] = [0x1E, 0x1F, 0xB1, 0xDB];
+        for col in 0..buf.cols {
+            for row in 0..buf.rows {
+                if buf.get(col, row).ch == 0x1E {
+                    let mut out = alloc::vec::Vec::new();
+                    let mut r = row;
+                    while r < buf.rows && BAR.contains(&buf.get(col, r).ch) {
+                        out.push(buf.get(col, r).ch);
+                        r += 1;
+                    }
+                    return out;
+                }
+            }
+        }
+        alloc::vec::Vec::new()
+    }
+
+    #[test]
+    fn a_list_that_fits_gets_no_scrollbar() {
+        let screen = Size::new(80, 25);
+        let mut f = long_choice(3);
+        f.handle(FormEvent::Enter);
+        let buf = flatten(render(&f, screen), screen);
+        assert!(
+            scrollbar_column(&buf).is_empty(),
+            "a bar that is always full says less than no bar at all"
+        );
+    }
+
+    #[test]
+    fn a_list_that_does_not_fit_gets_arrows_a_track_and_a_thumb() {
+        let screen = Size::new(80, 25);
+        let mut f = long_choice(40);
+        f.handle(FormEvent::Enter);
+        let buf = flatten(render(&f, screen), screen);
+        let bar = scrollbar_column(&buf);
+        assert!(!bar.is_empty(), "a scrolling list shows where it is");
+        assert_eq!(bar.first(), Some(&0x1E), "up arrow caps the track");
+        assert_eq!(bar.last(), Some(&0x1F), "down arrow caps it");
+        assert!(bar.contains(&0xDB), "the thumb is drawn");
+        assert!(
+            bar.contains(&0xB1),
+            "so is the empty track, in a shade the desktop does not use"
+        );
+    }
+
+    #[test]
+    fn the_track_is_not_drawn_in_the_desktop_shade() {
+        // A popup overhangs the panel onto the desktop, which is filled with
+        // light shade. A track in the same glyph reads as a hole in the frame.
+        let screen = Size::new(80, 25);
+        let mut f = long_choice(40);
+        f.handle(FormEvent::Enter);
+        let buf = flatten(render(&f, screen), screen);
+        assert!(!scrollbar_column(&buf).contains(&0xB0));
+    }
+
+    #[test]
+    fn the_popup_keeps_its_right_border_when_a_scrollbar_is_shown() {
+        let screen = Size::new(80, 25);
+        let mut f = long_choice(40);
+        f.handle(FormEvent::Enter);
+        let buf = flatten(render(&f, screen), screen);
+        // Find the bar, then check the column to its right is the frame.
+        let mut bar_col = None;
+        'outer: for col in 0..buf.cols {
+            for row in 0..buf.rows {
+                if buf.get(col, row).ch == 0x1E {
+                    bar_col = Some((col, row));
+                    break 'outer;
+                }
+            }
+        }
+        let (col, row) = bar_col.expect("a scrollbar");
+        assert_eq!(
+            buf.get(col + 1, row).ch,
+            0xB3,
+            "the bar takes its own column rather than the border"
+        );
+    }
+
+    #[test]
+    fn the_thumb_moves_down_as_the_list_scrolls() {
+        let screen = Size::new(80, 25);
+        let mut f = long_choice(40);
+        f.handle(FormEvent::Enter);
+        let top = flatten(render(&f, screen), screen);
+        let thumb_at = |b: &CellBuffer| {
+            scrollbar_column(b)
+                .iter()
+                .position(|&c| c == 0xDB)
+                .expect("a thumb")
+        };
+        let high = thumb_at(&top);
+
+        // Walk to the end of the list.
+        for _ in 0..39 {
+            f.handle(FormEvent::Down);
+        }
+        let bottom = flatten(render(&f, screen), screen);
+        assert!(
+            thumb_at(&bottom) > high,
+            "the thumb tracks the scroll position"
+        );
     }
 
     #[test]
