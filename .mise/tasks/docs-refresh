@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+#MISE description="Regenerate the committed doc artifacts (GIF, README frame)"
+set -euo pipefail
+
+# Both of these are generated from the demos but committed by hand, so they can
+# drift silently. CI runs this task and then `git diff --exit-code`, which makes
+# drifting impossible rather than merely unlikely.
+
+cargo run --quiet --example framebuffer -- --gif docs/demo.gif
+
+# The README shows one frame of the terminal host. Replace the first fenced
+# `text` block with a fresh render of it.
+python3 - <<'PY'
+import re
+import subprocess
+from pathlib import Path
+
+frame = subprocess.run(
+    ["cargo", "run", "--quiet", "--example", "terminal", "--", "--dump"],
+    capture_output=True,
+    text=True,
+    check=True,
+).stdout
+
+# The dump prints the whole screen plus a trailing caret line; the README shows
+# the panel and the desktop around it.
+lines = frame.split("\n")[5:22]
+block = "\n".join(lines).rstrip()
+
+readme = Path("README.md")
+text = readme.read_text()
+updated, count = re.subn(
+    r"```text\n.*?```",
+    lambda _: "```text\n" + block + "\n```",
+    text,
+    count=1,
+    flags=re.S,
+)
+if count != 1:
+    raise SystemExit("README.md: expected exactly one ```text block to refresh")
+readme.write_text(updated)
+print("refreshed the README frame")
+PY

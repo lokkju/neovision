@@ -28,6 +28,7 @@ decided otherwise" should not look alike a year from now.
   - [A caret must contrast against the row it lands on](#a-caret-must-contrast-against-the-row-it-lands-on)
   - [A scrollbar appears only when it means something](#a-scrollbar-appears-only-when-it-means-something)
   - [One char is one cell](#one-char-is-one-cell)
+  - [Generated artifacts are checked, not trusted](#generated-artifacts-are-checked-not-trusted)
 - [Geometry](#geometry)
   - [Layout is separate from theme](#layout-is-separate-from-theme)
 - [Undo](#undo)
@@ -330,6 +331,21 @@ should not have to pre-validate them.
 **Consequence.** A label longer than its column is truncated. It used to run on
 under the value beside it and be overwritten mid-word, because `write_str` stops
 at the layer's edge rather than the column's.
+
+### Generated artifacts are checked, not trusted
+
+`docs/demo.gif` and the README's rendered frame both come out of the demos, and
+both are committed. CI regenerates them and fails on any diff.
+
+**Why bother.** A committed artifact produced by code drifts the moment the code
+changes and nobody remembers to re-run the generator — and a screenshot that
+quietly stops matching the software is worse than none, because it is believed.
+
+**What it rests on.** Rendering is deterministic: same state in, same bytes out.
+The GIF encoder is fed palette indices rather than quantized colour, so there is
+no dithering to vary, and `Cargo.lock` pins the encoder. If a rendering change
+is intended, `mise run docs-refresh` regenerates both and the diff is the
+evidence that it did what was meant.
 
 ## Undo
 
