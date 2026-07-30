@@ -44,7 +44,7 @@ extern crate alloc;
 pub mod form;
 
 pub use form::{
-    render, render_themed, render_with_cursor, ButtonKind, ChoiceOption, Field, FieldKind,
+    render, render_themed, render_with_cursor, ButtonRole, ChoiceOption, Field, FieldKind,
     FormEvent, FormOutcome, FormState, HotkeyAttrs, Popup, Theme,
 };
 

@@ -35,8 +35,8 @@ use crossterm::{
 
 use neovision::neovision_core::cp437;
 use neovision::{
-    render_with_cursor, ButtonKind, Cell, CellBuffer, CellDraw, ChoiceOption, CursorShape, Field,
-    FieldKind, FormEvent, FormState, LayerStack, Point, Size, TextCursor, Theme,
+    render_with_cursor, Cell, CellBuffer, CellDraw, ChoiceOption, CursorShape, Field, FieldKind,
+    FormEvent, FormState, LayerStack, Point, Size, TextCursor, Theme,
 };
 
 /// What this demo's form can ask for.
@@ -295,16 +295,8 @@ fn demo_form() -> FormState<Action> {
                 kind: FieldKind::ReadOnly("terminal (cp437)".to_string()),
                 restore: vec![],
             },
-            Field {
-                label: "",
-                kind: FieldKind::Button(ButtonKind::Ok),
-                restore: vec![],
-            },
-            Field {
-                label: "",
-                kind: FieldKind::Button(ButtonKind::Cancel),
-                restore: vec![],
-            },
+            Field::ok(),
+            Field::cancel(),
         ],
     )
 }

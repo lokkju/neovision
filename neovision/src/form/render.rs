@@ -293,7 +293,7 @@ fn value_text<A>(field: &Field<A>) -> alloc::string::String {
         FieldKind::Text { buffer, .. } => buffer.clone(),
         FieldKind::Toggle { on, .. } => if *on { "Yes" } else { "No" }.to_string(),
         FieldKind::ReadOnly(s) => s.clone(),
-        FieldKind::Button(kind) => kind.label().to_string(),
+        FieldKind::Button { label, .. } => parse_mnemonic(label).0,
     }
 }
 
@@ -340,7 +340,7 @@ fn button_run_start<A>(fields: &[Field<A>]) -> usize {
     let trailing = fields
         .iter()
         .rev()
-        .take_while(|f| matches!(f.kind, FieldKind::Button(_)))
+        .take_while(|f| matches!(f.kind, FieldKind::Button { .. }))
         .count();
     fields.len() - trailing
 }
@@ -560,22 +560,26 @@ fn render_impl<A>(
             };
             body.write_str(Point::new(x, btn_row), chrome, attr);
 
-            // A built-in button's accelerator is implicit rather than marked,
-            // so find its letter in the chrome that was just drawn. Bracket
-            // and padding cells are never letters, so the first match is the
-            // label's own.
-            if let (Some(hot), Some(FieldKind::Button(kind))) =
+            // A button's accelerator is marked in its own label. Its column
+            // inside the chrome is the opening bracket plus the left padding
+            // plus its index in the label — computed rather than searched, so
+            // a label whose accelerator letter also appears earlier in it
+            // still marks the right cell.
+            if let (Some(hot), Some(FieldKind::Button { label, .. })) =
                 (theme.hotkey, fields.get(*idx).map(|f| &f.kind))
             {
-                let wanted = kind.mnemonic();
-                if let Some(offset) = chrome.chars().position(|c| c == wanted) {
+                let (text, mnemonic) = parse_mnemonic(label);
+                if let Some((wanted, idx_in_label)) = mnemonic {
+                    let len = text.chars().count() as u16;
+                    let inner_w = (len + 2).max(BUTTON_MIN_INNER);
+                    let offset = 1 + (inner_w - len) / 2 + idx_in_label as u16;
                     let hot_attr = if *idx == state.focus() {
                         hot.selected
                     } else {
                         hot.normal
                     };
                     body.put(
-                        x.saturating_add(offset as u16),
+                        x.saturating_add(offset),
                         btn_row,
                         Cell {
                             ch: cp437_byte(wanted),
@@ -698,10 +702,8 @@ fn push_popup<A>(
 
 #[cfg(test)]
 mod tests {
+    use super::super::model::ButtonRole;
     use super::*;
-    // The renderer itself reaches button text through `ButtonKind::label()`,
-    // so only the tests still name the enum.
-    use super::super::model::ButtonKind;
     use alloc::string::ToString;
     use neovision_core::{CellBuffer, LayerStack};
 
@@ -728,7 +730,11 @@ mod tests {
                 },
                 Field {
                     label: "",
-                    kind: FieldKind::Button(ButtonKind::Ok),
+                    kind: FieldKind::Button {
+                        label: "~O~K",
+                        role: ButtonRole::Accept,
+                        action: None
+                    },
                     restore: alloc::vec![],
                 },
             ],
@@ -907,12 +913,20 @@ mod tests {
                 },
                 Field {
                     label: "",
-                    kind: FieldKind::Button(ButtonKind::Ok),
+                    kind: FieldKind::Button {
+                        label: "~O~K",
+                        role: ButtonRole::Accept,
+                        action: None
+                    },
                     restore: Vec::new(),
                 },
                 Field {
                     label: "",
-                    kind: FieldKind::Button(ButtonKind::Cancel),
+                    kind: FieldKind::Button {
+                        label: "~C~ancel",
+                        role: ButtonRole::Reject,
+                        action: None
+                    },
                     restore: Vec::new(),
                 },
             ],
@@ -1104,7 +1118,11 @@ mod tests {
                 },
                 Field {
                     label: "",
-                    kind: FieldKind::Button(ButtonKind::Ok),
+                    kind: FieldKind::Button {
+                        label: "~O~K",
+                        role: ButtonRole::Accept,
+                        action: None
+                    },
                     restore: Vec::new()
                 },
             ],
@@ -1160,7 +1178,11 @@ mod tests {
                 },
                 Field {
                     label: "",
-                    kind: FieldKind::Button(ButtonKind::Ok),
+                    kind: FieldKind::Button {
+                        label: "~O~K",
+                        role: ButtonRole::Accept,
+                        action: None
+                    },
                     restore: Vec::new(),
                 },
             ],
@@ -1296,7 +1318,11 @@ mod tests {
                 },
                 Field {
                     label: "",
-                    kind: FieldKind::Button(ButtonKind::Ok),
+                    kind: FieldKind::Button {
+                        label: "~O~K",
+                        role: ButtonRole::Accept,
+                        action: None
+                    },
                     restore: Vec::new(),
                 },
             ],

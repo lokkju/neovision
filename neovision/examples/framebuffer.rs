@@ -27,8 +27,8 @@ use minifb::{Key, KeyRepeat, Scale, Window, WindowOptions};
 
 use neovision::neovision_core::font;
 use neovision::{
-    render_with_cursor, ButtonKind, Cell, CellBuffer, CellDraw, ChoiceOption, CursorShape, Field,
-    FieldKind, FormEvent, FormState, LayerStack, Point, Size, TextCursor, Theme,
+    render_with_cursor, Cell, CellBuffer, CellDraw, ChoiceOption, CursorShape, Field, FieldKind,
+    FormEvent, FormState, LayerStack, Point, Size, TextCursor, Theme,
 };
 
 /// The 16 VGA colours as `0x00RRGGBB`, in hardware order.
@@ -337,16 +337,8 @@ fn demo_form() -> FormState<Action> {
                 kind: FieldKind::ReadOnly("framebuffer 8x16".to_string()),
                 restore: vec![],
             },
-            Field {
-                label: "",
-                kind: FieldKind::Button(ButtonKind::Ok),
-                restore: vec![],
-            },
-            Field {
-                label: "",
-                kind: FieldKind::Button(ButtonKind::Cancel),
-                restore: vec![],
-            },
+            Field::ok(),
+            Field::cancel(),
         ],
     )
 }
