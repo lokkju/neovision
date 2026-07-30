@@ -7,7 +7,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use super::model::{parse_mnemonic, Field, FieldKind, FormState, Popup};
+use super::model::{parse_mnemonic, ClusterItem, ClusterStyle, Field, FieldKind, FormState, Popup};
 // Only the test module's `use super::*` needs these; the renderer itself
 // never constructs a `ChoiceOption` or feeds a `FormEvent`.
 #[cfg(test)]
@@ -103,6 +103,31 @@ impl Theme {
         }),
         selection: 0x17, // grey-on-blue: reverse of the 0x71 focused row bar
     };
+}
+
+/// How many rows a field occupies.
+///
+/// Everything is one row except a cluster, which takes one per item — it is
+/// the only field that is taller than its label.
+fn rows_of<A>(field: &Field<A>) -> u16 {
+    match &field.kind {
+        FieldKind::Cluster { items, .. } => items.len().max(1) as u16,
+        _ => 1,
+    }
+}
+
+/// Row offset of each field within the panel body, and the total.
+///
+/// Returned rather than recomputed at each use so that the panel height, the
+/// popup's anchor and the caret's row cannot disagree about where a field is.
+fn row_offsets<A>(fields: &[Field<A>], upto: usize) -> (Vec<u16>, u16) {
+    let mut offsets = Vec::with_capacity(upto);
+    let mut row = 0;
+    for field in fields.iter().take(upto) {
+        offsets.push(row);
+        row += rows_of(field);
+    }
+    (offsets, row)
 }
 
 /// Visible width of a [`FieldKind::Text`] value, inside its brackets.
@@ -308,6 +333,8 @@ fn value_text<A>(field: &Field<A>) -> alloc::string::String {
             }
         }
         FieldKind::Text { buffer, .. } => buffer.clone(),
+        // A cluster draws its own rows rather than a value column.
+        FieldKind::Cluster { .. } => alloc::string::String::new(),
         FieldKind::Toggle { on, .. } => if *on { "Yes" } else { "No" }.to_string(),
         FieldKind::ReadOnly(s) => s.clone(),
         FieldKind::Button { label, .. } => parse_mnemonic(label).0,
@@ -378,7 +405,7 @@ fn render_impl<A>(
     let fields = state.fields();
     let button_start = button_run_start(fields);
     let has_buttons = button_start < fields.len();
-    let field_rows = button_start as u16;
+    let (offsets, field_rows) = row_offsets(fields, button_start);
     // A collapsed button row also gets a separator rule above it, so the two
     // extra rows (separator + button row) replace what would otherwise be
     // one row per button.
@@ -404,7 +431,7 @@ fn render_impl<A>(
     body.write_str(Point::new(tx, 0), &title, theme.title);
 
     for (i, field) in fields[..button_start].iter().enumerate() {
-        let row = i as u16 + 1;
+        let row = offsets[i] + 1;
         let focused = i == state.focus();
         let read_only = matches!(field.kind, FieldKind::ReadOnly(_));
         let label_attr = if focused {
@@ -440,11 +467,20 @@ fn render_impl<A>(
                 .hotkey
                 .map(|h| if focused { h.selected } else { h.normal }),
         );
-        body.write_str(
-            Point::new(2 + LABEL_W, row),
-            &value_column(field, focused),
-            value_attr,
-        );
+        if let FieldKind::Cluster {
+            style,
+            items,
+            cursor,
+        } = &field.kind
+        {
+            draw_cluster(&mut body, row, *style, items, *cursor, focused, theme);
+        } else {
+            body.write_str(
+                Point::new(2 + LABEL_W, row),
+                &value_column(field, focused),
+                value_attr,
+            );
+        }
         // Selection highlight for a focused, selected Number field.
         // `selected` (whole-value selection on entry, Turbo Vision-style)
         // repaints every digit cell in `theme.selection`. The edit caret
@@ -676,8 +712,12 @@ fn push_popup<A>(
     let widest = options.iter().map(|o| o.label.len()).max().unwrap_or(0) as u16;
     let inner_w = widest.max(4).min(screen.w.saturating_sub(5));
 
-    // Sit under the field, then clamp so the popup stays on screen.
-    let y = (panel.top() + popup.field as u16 + 2).min(screen.h.saturating_sub(3));
+    // Sit under the field, then clamp so the popup stays on screen. The row
+    // comes from the same offsets the body used, so a cluster above the
+    // dropdown pushes the popup down with it rather than leaving it behind.
+    let (offsets, _) = row_offsets(state.fields(), popup.field + 1);
+    let field_row = offsets.get(popup.field).copied().unwrap_or(0);
+    let y = (panel.top() + field_row + 2).min(screen.h.saturating_sub(3));
     let max_rows = screen.h.saturating_sub(y).saturating_sub(1);
     // A framed list needs at least three rows: top border, one option, bottom
     // border. On a screen too short for that, draw no popup at all rather than
@@ -731,6 +771,72 @@ fn push_popup<A>(
         draw_scrollbar(&mut list, w - 2, visible, options.len(), first, theme);
     }
     layers.push(list);
+}
+
+/// Draw a cluster's items, one per row, in the value column.
+///
+/// Only the caret's row carries the focused attribute — lighting the whole
+/// cluster would say the group is selected rather than which item is.
+#[allow(clippy::too_many_arguments)]
+fn draw_cluster<A>(
+    body: &mut Layer,
+    first_row: u16,
+    style: ClusterStyle,
+    items: &[ClusterItem<A>],
+    cursor: usize,
+    focused: bool,
+    theme: Theme,
+) {
+    for (i, item) in items.iter().enumerate() {
+        let row = first_row + i as u16;
+        let on_caret = focused && i == cursor;
+        let attr = if on_caret {
+            theme.selected
+        } else {
+            theme.normal
+        };
+
+        // Rows after the first have no label of their own, and must not carry
+        // the first row's selection bar across the label column.
+        if i > 0 {
+            body.fill(
+                Rect::new(1, row, LABEL_W + 1, 1),
+                LayerCell::Opaque(Cell {
+                    ch: b' ',
+                    attr: theme.normal,
+                }),
+            );
+        }
+
+        body.fill(
+            Rect::new(2 + LABEL_W, row, VALUE_W, 1),
+            LayerCell::Opaque(Cell { ch: b' ', attr }),
+        );
+
+        let (open, close) = match style {
+            ClusterStyle::Radio => (b'(', b')'),
+            ClusterStyle::Check => (b'[', b']'),
+        };
+        let mark = match (style, item.on) {
+            (ClusterStyle::Radio, true) => 0x07, // CP437 bullet
+            (ClusterStyle::Check, true) => b'X',
+            _ => b' ',
+        };
+        let x = 2 + LABEL_W;
+        body.put(x, row, Cell { ch: open, attr });
+        body.put(x + 1, row, Cell { ch: mark, attr });
+        body.put(x + 2, row, Cell { ch: close, attr });
+
+        write_label(
+            body,
+            Point::new(x + 4, row),
+            &item.label,
+            attr,
+            theme
+                .hotkey
+                .map(|h| if on_caret { h.selected } else { h.normal }),
+        );
+    }
 }
 
 /// Draw a vertical scrollbar down the list's right border.
@@ -1162,6 +1268,126 @@ mod tests {
     }
 
     /// A form whose single field is a Choice with `n` options.
+    fn with_cluster(style: ClusterStyle) -> FormState<TestOp> {
+        FormState::new(
+            "T",
+            alloc::vec![
+                Field {
+                    label: "Mode",
+                    kind: FieldKind::Cluster {
+                        style,
+                        items: alloc::vec![
+                            ClusterItem {
+                                label: "Fast".to_string(),
+                                on: true,
+                                on_action: TestOp::A,
+                                off_action: None,
+                            },
+                            ClusterItem {
+                                label: "Slow".to_string(),
+                                on: false,
+                                on_action: TestOp::B,
+                                off_action: None,
+                            },
+                        ],
+                        cursor: 0,
+                    },
+                    restore: Vec::new(),
+                },
+                Field {
+                    label: "After",
+                    kind: FieldKind::Choice {
+                        options: alloc::vec![ChoiceOption {
+                            label: "One".to_string(),
+                            action: TestOp::A
+                        }],
+                        selected: Some(0),
+                    },
+                    restore: Vec::new(),
+                },
+            ],
+        )
+    }
+
+    #[test]
+    fn a_cluster_takes_one_row_per_item() {
+        let screen = Size::new(80, 25);
+        let f = with_cluster(ClusterStyle::Radio);
+        let buf = flatten(render(&f, screen), screen);
+        let first = find_row(&buf, "Fast").expect("first item");
+        let second = find_row(&buf, "Slow").expect("second item");
+        assert_eq!(second, first + 1, "items stack on consecutive rows");
+    }
+
+    #[test]
+    fn a_radio_cluster_marks_only_the_chosen_item() {
+        let screen = Size::new(80, 25);
+        let buf = flatten(render(&with_cluster(ClusterStyle::Radio), screen), screen);
+        let row = find_row(&buf, "Fast").expect("first item");
+        assert_eq!(buf.get(col_of(&buf, row, b'(') + 1, row).ch, 0x07);
+        let row = find_row(&buf, "Slow").expect("second item");
+        assert_eq!(buf.get(col_of(&buf, row, b'(') + 1, row).ch, b' ');
+    }
+
+    #[test]
+    fn a_check_cluster_uses_brackets_rather_than_parentheses() {
+        let screen = Size::new(80, 25);
+        let buf = flatten(render(&with_cluster(ClusterStyle::Check), screen), screen);
+        let row = find_row(&buf, "Fast").expect("first item");
+        let text = row_text(&buf, row);
+        assert!(text.contains("[X] Fast"), "got: {text}");
+    }
+
+    #[test]
+    fn only_the_caret_row_of_a_focused_cluster_is_highlighted() {
+        let screen = Size::new(80, 25);
+        let f = with_cluster(ClusterStyle::Check);
+        let buf = flatten(render(&f, screen), screen);
+        let caret = find_row(&buf, "Fast").expect("caret row");
+        let other = find_row(&buf, "Slow").expect("other row");
+        let at = |r: u16| buf.get(col_of(&buf, r, b'['), r).attr;
+        assert_eq!(at(caret), Theme::DEFAULT.selected);
+        assert_ne!(
+            at(other),
+            Theme::DEFAULT.selected,
+            "the whole group lighting up would say the wrong thing"
+        );
+    }
+
+    #[test]
+    fn the_panel_grows_to_fit_a_multi_row_field() {
+        let screen = Size::new(80, 25);
+        let tall = flatten(render(&with_cluster(ClusterStyle::Radio), screen), screen);
+        let short = flatten(render(&form(), screen), screen);
+        let height = |b: &CellBuffer| {
+            let rows: Vec<u16> = (0..b.rows)
+                .filter(|&r| (0..b.cols).any(|c| b.get(c, r).ch == 0xBA))
+                .collect();
+            rows.len()
+        };
+        assert!(height(&tall) > 0 && height(&short) > 0);
+    }
+
+    #[test]
+    fn a_popup_below_a_cluster_still_lands_on_its_own_field() {
+        // The popup used to anchor at `panel.top() + field_index`, which is
+        // only right while every field is one row tall.
+        let screen = Size::new(80, 25);
+        let mut f = with_cluster(ClusterStyle::Radio);
+        f.handle(FormEvent::Tab); // leave the cluster, onto the Choice
+        f.handle(FormEvent::Enter); // open it
+        let buf = flatten(render(&f, screen), screen);
+        let field_row = find_row(&buf, "After").expect("the choice row");
+        let popup_top = (0..buf.rows)
+            .find(|&r| (0..buf.cols).any(|c| buf.get(c, r).ch == 0xDA))
+            .expect("the popup frame");
+        assert_eq!(
+            popup_top,
+            field_row + 1,
+            "the popup hangs off its own field, not off a miscounted row"
+        );
+    }
+
     fn long_choice(n: usize) -> FormState<TestOp> {
         let options: Vec<ChoiceOption<TestOp>> = (0..n)
             .map(|i| ChoiceOption {
