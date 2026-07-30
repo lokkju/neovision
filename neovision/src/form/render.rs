@@ -77,6 +77,18 @@ impl FormTheme {
     };
 }
 
+/// Visible width of a [`FieldKind::Text`] value, inside its brackets.
+const TEXT_VISIBLE_W: u16 = VALUE_W - 2;
+
+/// First visible character of a text field, derived from the caret alone.
+///
+/// Stateless on purpose: keeping a `first_visible` in the model would be a
+/// second source of truth that has to be nudged back into agreement with the
+/// caret on every edit. Deriving it means the two cannot disagree.
+fn text_scroll(cursor: usize) -> usize {
+    cursor.saturating_sub(TEXT_VISIBLE_W as usize - 1)
+}
+
 /// Width of the label column, in cells.
 const LABEL_W: u16 = 14;
 /// Width of the value column, in cells.
@@ -147,6 +159,15 @@ fn value_column<A>(field: &Field<A>, focused: bool) -> String {
             let s = alloc::format!("[{:<4} ]{unit} ({min}-{max})", digits);
             fit(&s, VALUE_W as usize)
         }
+        FieldKind::Text { buffer, cursor, .. } => {
+            let first = text_scroll(*cursor);
+            let window: String = buffer
+                .chars()
+                .skip(first)
+                .take(TEXT_VISIBLE_W as usize)
+                .collect();
+            alloc::format!("[{}]", fit(&window, TEXT_VISIBLE_W as usize))
+        }
         _ => {
             let inner_w = VALUE_W.saturating_sub(2) as usize;
             alloc::format!("[{}]", fit(&value_text(field), inner_w))
@@ -193,6 +214,7 @@ fn value_text<A>(field: &Field<A>) -> alloc::string::String {
                 alloc::format!("{buffer}{unit}")
             }
         }
+        FieldKind::Text { buffer, .. } => buffer.clone(),
         FieldKind::Toggle { on, .. } => if *on { "Yes" } else { "No" }.to_string(),
         FieldKind::ReadOnly(s) => s.clone(),
         FieldKind::Button(ButtonKind::Ok) => "OK".to_string(),
@@ -356,19 +378,30 @@ fn render_impl<A>(state: &FormState<A>, screen: Size) -> (Vec<Layer>, Option<Tex
         // Text cursor: only for a focused, actively-edited (not selected)
         // Number field. Screen cell = panel origin + local field position.
         if focused {
-            if let FieldKind::Number {
-                cursor,
-                selected,
-                overtype,
-                ..
-            } = &field.kind
-            {
-                if !*selected {
-                    let local_x = 2 + LABEL_W + 1 + *cursor as u16; // past label, gap, '['
+            let entry = match &field.kind {
+                FieldKind::Number {
+                    cursor,
+                    selected,
+                    overtype,
+                    ..
+                } => Some((*cursor, *selected, *overtype)),
+                // A text field scrolls, so the caret's column is its offset
+                // within the visible window rather than within the buffer.
+                FieldKind::Text {
+                    cursor,
+                    selected,
+                    overtype,
+                    ..
+                } => Some((*cursor - text_scroll(*cursor), *selected, *overtype)),
+                _ => None,
+            };
+            if let Some((cursor, selected, overtype)) = entry {
+                if !selected {
+                    let local_x = 2 + LABEL_W + 1 + cursor as u16; // past label, gap, '['
                     text_cursor = Some(TextCursor {
                         col: panel.origin.x + local_x,
                         row: panel.origin.y + row,
-                        shape: if *overtype {
+                        shape: if overtype {
                             CursorShape::Overtype
                         } else {
                             CursorShape::Insert
@@ -550,6 +583,89 @@ mod tests {
 
     /// OK and Cancel both present (not just OK) so the layout tests exercise
     /// the actual side-by-side button row, not a degenerate one-button case.
+    fn text_form(initial: &str, cursor: usize) -> FormState<TestOp> {
+        FormState::new(
+            "T",
+            alloc::vec![Field {
+                label: "Name",
+                kind: FieldKind::Text {
+                    buffer: initial.to_string(),
+                    cursor,
+                    selected: false,
+                    overtype: false,
+                    max_len: 64,
+                    commit: |_| TestOp::A,
+                },
+                restore: alloc::vec![],
+            }],
+        )
+    }
+
+    #[test]
+    fn a_text_field_renders_bracketed_like_other_editable_values() {
+        let screen = Size::new(80, 25);
+        let f = text_form("Loki", 4);
+        let buf = flatten(render(&f, screen), screen);
+        let row = find_row(&buf, "Name").expect("name row");
+        assert!(
+            row_text(&buf, row).contains("[Loki"),
+            "got: {}",
+            row_text(&buf, row)
+        );
+    }
+
+    #[test]
+    fn a_text_field_shorter_than_its_slot_does_not_scroll() {
+        assert_eq!(text_scroll(0), 0);
+        assert_eq!(text_scroll(TEXT_VISIBLE_W as usize - 1), 0);
+    }
+
+    #[test]
+    fn a_long_text_field_scrolls_to_keep_the_caret_in_view() {
+        // One past the last visible column must scroll by exactly one.
+        assert_eq!(text_scroll(TEXT_VISIBLE_W as usize), 1);
+        assert_eq!(text_scroll(TEXT_VISIBLE_W as usize + 5), 6);
+    }
+
+    #[test]
+    fn the_caret_of_a_scrolled_text_field_stays_inside_the_brackets() {
+        let screen = Size::new(80, 25);
+        let long = "x".repeat(TEXT_VISIBLE_W as usize + 10);
+        let caret_at = long.chars().count();
+        let f = text_form(&long, caret_at);
+        let (_, cursor) = render_with_cursor(&f, screen);
+        let c = cursor.expect("an actively-edited text field has a caret");
+
+        let buf = flatten(render(&f, screen), screen);
+        let row = find_row(&buf, "Name").expect("name row");
+        let text = row_text(&buf, row);
+        let open = text.find('[').expect("opening bracket") as u16;
+        let close = text.find(']').expect("closing bracket") as u16;
+        assert!(
+            c.col > open && c.col <= close,
+            "caret at {} escaped the brackets at {}..{}",
+            c.col,
+            open,
+            close
+        );
+    }
+
+    #[test]
+    fn a_scrolled_text_field_shows_the_end_of_the_buffer_not_the_start() {
+        let screen = Size::new(80, 25);
+        let long: alloc::string::String = ('a'..='z').collect();
+        let caret_at = long.chars().count();
+        let f = text_form(&long, caret_at);
+        let buf = flatten(render(&f, screen), screen);
+        let row = find_row(&buf, "Name").expect("name row");
+        let text = row_text(&buf, row);
+        assert!(text.contains('z'), "the caret end must be visible: {text}");
+        assert!(
+            !text.contains("[abc"),
+            "should have scrolled past the start: {text}"
+        );
+    }
+
     fn form() -> FormState<TestOp> {
         FormState::new(
             "SETTINGS",

@@ -24,8 +24,141 @@ pub struct ChoiceOption<A> {
     pub action: A,
 }
 
+/// A borrowed view of whatever entry field currently has focus.
+///
+/// Both [`FieldKind::Text`] and [`FieldKind::Number`] are entry fields: they
+/// hold a buffer, a caret, a whole-value selection and an insert/overtype
+/// mode, and they respond to typing identically apart from what they accept
+/// and how long they may get. Turbo Vision drew the same line — numeric entry
+/// was a validated `TInputLine`, not a separate control.
+///
+/// Borrowing them into one shape means the editing state machine is written
+/// and tested once instead of once per field kind.
+struct EditRef<'a> {
+    buffer: &'a mut String,
+    /// Caret position in **characters**, not bytes. One char is one cell, so
+    /// this is also the caret's column offset within the value.
+    cursor: &'a mut usize,
+    selected: &'a mut bool,
+    overtype: &'a mut bool,
+    /// Longest the buffer may become, in characters.
+    max_len: usize,
+    /// Whether the field takes only ASCII digits.
+    digits_only: bool,
+}
+
+impl EditRef<'_> {
+    /// Character count, which is also the caret's maximum position.
+    fn len(&self) -> usize {
+        self.buffer.chars().count()
+    }
+
+    /// Byte offset of a character index, for the places `String` needs one.
+    fn byte_of(&self, char_idx: usize) -> usize {
+        self.buffer
+            .char_indices()
+            .nth(char_idx)
+            .map(|(b, _)| b)
+            .unwrap_or(self.buffer.len())
+    }
+
+    fn type_char(&mut self, c: char) {
+        if self.digits_only && !c.is_ascii_digit() {
+            return;
+        }
+        if *self.selected {
+            self.buffer.clear();
+            self.buffer.push(c);
+            *self.selected = false;
+            *self.cursor = 1;
+            return;
+        }
+        let len = self.len();
+        if *self.overtype && *self.cursor < len {
+            let start = self.byte_of(*self.cursor);
+            let end = self.byte_of(*self.cursor + 1);
+            let mut tmp = [0u8; 4];
+            self.buffer
+                .replace_range(start..end, c.encode_utf8(&mut tmp));
+            *self.cursor += 1;
+        } else if len < self.max_len {
+            let at = self.byte_of(*self.cursor);
+            self.buffer.insert(at, c);
+            *self.cursor += 1;
+        }
+    }
+
+    fn backspace(&mut self) {
+        if *self.selected {
+            self.buffer.clear();
+            *self.selected = false;
+            *self.cursor = 0;
+        } else if *self.cursor > 0 {
+            let at = self.byte_of(*self.cursor - 1);
+            self.buffer.remove(at);
+            *self.cursor -= 1;
+        }
+    }
+
+    fn delete(&mut self) {
+        if *self.selected {
+            self.buffer.clear();
+            *self.selected = false;
+            *self.cursor = 0;
+        } else if *self.cursor < self.len() {
+            let at = self.byte_of(*self.cursor);
+            self.buffer.remove(at);
+        }
+    }
+
+    fn home(&mut self) {
+        *self.selected = false;
+        *self.cursor = 0;
+    }
+
+    fn end(&mut self) {
+        *self.selected = false;
+        *self.cursor = self.len();
+    }
+
+    fn left(&mut self) {
+        if *self.selected {
+            *self.selected = false;
+            *self.cursor = 0;
+        } else {
+            *self.cursor = self.cursor.saturating_sub(1);
+        }
+    }
+
+    fn right(&mut self) {
+        // Right when selected moves the caret to the end (CUA spec), rather
+        // than relying on the unstated invariant that a selected field's
+        // caret already sits there.
+        if *self.selected {
+            *self.selected = false;
+            *self.cursor = self.len();
+        } else {
+            *self.cursor = (*self.cursor + 1).min(self.len());
+        }
+    }
+
+    fn toggle_overtype(&mut self) {
+        *self.overtype = !*self.overtype;
+        *self.selected = false;
+    }
+
+    fn select_all(&mut self) {
+        *self.selected = true;
+        *self.cursor = self.len();
+    }
+}
+
 /// What a field is and how it behaves.
+///
+/// Marked non-exhaustive: new field kinds are expected, and a consumer's
+/// `match` should not break every time one arrives.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum FieldKind<A> {
     /// One-of-N. Enter opens a popup listing every option.
     Choice {
@@ -59,6 +192,32 @@ pub enum FieldKind<A> {
         max: u32,
         unit: &'static str,
         commit: fn(u32) -> A,
+    },
+    /// Free text entry — the analogue of Turbo Vision's `TInputLine`.
+    ///
+    /// Typing buffers; Enter commits the buffer through `commit`. Editing
+    /// behaves exactly as [`FieldKind::Number`] does, because both borrow the
+    /// same state machine: whole-value selection on entry, insert/overtype
+    /// toggled by Insert, Home/End/Delete/Backspace as CUA specifies.
+    Text {
+        /// The live text, edited in place.
+        buffer: String,
+        /// Caret position in **characters**, in `0..=buffer.chars().count()`.
+        /// One char renders as one cell, so this is also its column offset.
+        cursor: usize,
+        /// Whole-value selection (Turbo Vision "selected on entry"). While
+        /// set, the first character typed replaces the whole buffer.
+        selected: bool,
+        /// `false` = insert (default), `true` = overtype.
+        overtype: bool,
+        /// Longest the buffer may become, in characters.
+        max_len: usize,
+        /// Called with the committed text to build the caller's action.
+        ///
+        /// A plain fn pointer rather than a closure, for the same reason
+        /// [`FieldKind::Number`] uses one: it keeps the field `Clone` and
+        /// avoids boxing under `no_std`.
+        commit: fn(&str) -> A,
     },
     /// Two-state. Enter flips it and emits the matching action.
     Toggle {
@@ -388,7 +547,7 @@ impl<A: Clone> FormState<A> {
                 FormOutcome::nothing()
             }
             FormEvent::Left => {
-                if self.focused_is_number() {
+                if self.focused_is_entry() {
                     self.on_left();
                 } else {
                     self.step_col(-1);
@@ -396,7 +555,7 @@ impl<A: Clone> FormState<A> {
                 FormOutcome::nothing()
             }
             FormEvent::Right => {
-                if self.focused_is_number() {
+                if self.focused_is_entry() {
                     self.on_right();
                 } else {
                     self.step_col(1);
@@ -446,165 +605,108 @@ impl<A: Clone> FormState<A> {
         self.fields.get_mut(self.focus).map(|f| &mut f.kind)
     }
 
-    fn focused_is_number(&self) -> bool {
+    /// Whether focus is on an entry field, where Left/Right move the caret
+    /// rather than moving between fields on a shared row.
+    fn focused_is_entry(&self) -> bool {
         matches!(
             self.fields.get(self.focus).map(|f| &f.kind),
-            Some(FieldKind::Number { .. })
+            Some(FieldKind::Number { .. }) | Some(FieldKind::Text { .. })
         )
     }
 
-    /// Re-select the focused field if it is a Number (focus-in hook).
+    /// Borrow whichever entry field has focus, if any.
+    fn focused_edit(&mut self) -> Option<EditRef<'_>> {
+        match self.focused_kind_mut()? {
+            FieldKind::Number {
+                buffer,
+                cursor,
+                selected,
+                overtype,
+                ..
+            } => Some(EditRef {
+                buffer,
+                cursor,
+                selected,
+                overtype,
+                // The digit slot the renderer reserves is four wide.
+                max_len: 4,
+                digits_only: true,
+            }),
+            FieldKind::Text {
+                buffer,
+                cursor,
+                selected,
+                overtype,
+                max_len,
+                ..
+            } => {
+                let max_len = *max_len;
+                Some(EditRef {
+                    buffer,
+                    cursor,
+                    selected,
+                    overtype,
+                    max_len,
+                    digits_only: false,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// Re-select an entry field's whole value when focus lands on it, which is
+    /// what Turbo Vision did so that typing replaces rather than appends.
     fn reselect_focused(&mut self) {
-        if let Some(FieldKind::Number {
-            buffer,
-            cursor,
-            selected,
-            ..
-        }) = self.focused_kind_mut()
-        {
-            *selected = true;
-            *cursor = buffer.len();
+        if let Some(mut edit) = self.focused_edit() {
+            edit.select_all();
         }
     }
 
     fn type_char(&mut self, c: char) {
-        if !c.is_ascii_digit() {
-            return;
-        }
-        if let Some(FieldKind::Number {
-            buffer,
-            cursor,
-            selected,
-            overtype,
-            ..
-        }) = self.focused_kind_mut()
-        {
-            if *selected {
-                buffer.clear();
-                buffer.push(c);
-                *selected = false;
-                *cursor = buffer.len();
-                return;
-            }
-            let mut tmp = [0u8; 4];
-            let s = c.encode_utf8(&mut tmp);
-            if *overtype {
-                if *cursor < buffer.len() {
-                    buffer.replace_range(*cursor..*cursor + 1, s);
-                    *cursor += 1;
-                } else if buffer.len() < 4 {
-                    buffer.push(c);
-                    *cursor += 1;
-                }
-            } else if buffer.len() < 4 {
-                buffer.insert(*cursor, c);
-                *cursor += 1;
-            }
+        if let Some(mut edit) = self.focused_edit() {
+            edit.type_char(c);
         }
     }
 
     fn on_left(&mut self) {
-        if let Some(FieldKind::Number {
-            cursor, selected, ..
-        }) = self.focused_kind_mut()
-        {
-            if *selected {
-                *selected = false;
-                *cursor = 0;
-            } else {
-                *cursor = cursor.saturating_sub(1);
-            }
+        if let Some(mut edit) = self.focused_edit() {
+            edit.left();
         }
     }
 
     fn on_right(&mut self) {
-        if let Some(FieldKind::Number {
-            buffer,
-            cursor,
-            selected,
-            ..
-        }) = self.focused_kind_mut()
-        {
-            // Right when selected moves the cursor to the end (CUA spec),
-            // rather than relying on the unstated invariant that a selected
-            // field's cursor already sits at `buffer.len()` (which the
-            // `+ 1` below would otherwise depend on silently).
-            if *selected {
-                *selected = false;
-                *cursor = buffer.len();
-            } else {
-                *cursor = (*cursor + 1).min(buffer.len());
-            }
+        if let Some(mut edit) = self.focused_edit() {
+            edit.right();
         }
     }
 
     fn on_home(&mut self) {
-        if let Some(FieldKind::Number {
-            cursor, selected, ..
-        }) = self.focused_kind_mut()
-        {
-            *selected = false;
-            *cursor = 0;
+        if let Some(mut edit) = self.focused_edit() {
+            edit.home();
         }
     }
 
     fn on_end(&mut self) {
-        if let Some(FieldKind::Number {
-            buffer,
-            cursor,
-            selected,
-            ..
-        }) = self.focused_kind_mut()
-        {
-            *selected = false;
-            *cursor = buffer.len();
+        if let Some(mut edit) = self.focused_edit() {
+            edit.end();
         }
     }
 
     fn on_backspace(&mut self) {
-        if let Some(FieldKind::Number {
-            buffer,
-            cursor,
-            selected,
-            ..
-        }) = self.focused_kind_mut()
-        {
-            if *selected {
-                buffer.clear();
-                *selected = false;
-                *cursor = 0;
-            } else if *cursor > 0 {
-                buffer.remove(*cursor - 1);
-                *cursor -= 1;
-            }
+        if let Some(mut edit) = self.focused_edit() {
+            edit.backspace();
         }
     }
 
     fn on_delete(&mut self) {
-        if let Some(FieldKind::Number {
-            buffer,
-            cursor,
-            selected,
-            ..
-        }) = self.focused_kind_mut()
-        {
-            if *selected {
-                buffer.clear();
-                *selected = false;
-                *cursor = 0;
-            } else if *cursor < buffer.len() {
-                buffer.remove(*cursor);
-            }
+        if let Some(mut edit) = self.focused_edit() {
+            edit.delete();
         }
     }
 
     fn on_insert(&mut self) {
-        if let Some(FieldKind::Number {
-            overtype, selected, ..
-        }) = self.focused_kind_mut()
-        {
-            *overtype = !*overtype;
-            *selected = false;
+        if let Some(mut edit) = self.focused_edit() {
+            edit.toggle_overtype();
         }
     }
 
@@ -635,6 +737,20 @@ impl<A: Clone> FormState<A> {
                 } else {
                     off_action.clone()
                 };
+                changed = true;
+                FormOutcome::action(a)
+            }
+            Some(FieldKind::Text {
+                buffer,
+                selected,
+                commit,
+                ..
+            }) => {
+                // Committing text is simpler than committing a number: there
+                // is nothing to parse and nothing to clamp, so an empty buffer
+                // is a legitimate value rather than "nothing was typed".
+                *selected = false;
+                let a = commit(buffer.as_str());
                 changed = true;
                 FormOutcome::action(a)
             }
@@ -1340,6 +1456,174 @@ mod tests {
             out.actions.is_empty(),
             "Cancel must not invent an action for a field with no opening value"
         );
+    }
+
+    /// A form holding one Text field followed by an OK button.
+    fn text_form(initial: &str, max_len: usize) -> FormState<TestOp> {
+        FormState::new(
+            "T",
+            alloc::vec![
+                Field {
+                    label: "Name",
+                    kind: FieldKind::Text {
+                        buffer: alloc::string::String::from(initial),
+                        cursor: initial.chars().count(),
+                        selected: true,
+                        overtype: false,
+                        max_len,
+                        commit: |_| TestOp::A,
+                    },
+                    restore: alloc::vec![TestOp::Off],
+                },
+                Field {
+                    label: "",
+                    kind: FieldKind::Button(ButtonKind::Ok),
+                    restore: alloc::vec![],
+                },
+            ],
+        )
+    }
+
+    /// (buffer, cursor, selected, overtype) of the first field.
+    fn text_of(f: &FormState<TestOp>) -> (alloc::string::String, usize, bool, bool) {
+        match &f.fields()[0].kind {
+            FieldKind::Text {
+                buffer,
+                cursor,
+                selected,
+                overtype,
+                ..
+            } => (buffer.clone(), *cursor, *selected, *overtype),
+            _ => panic!("field 0 is not Text"),
+        }
+    }
+
+    #[test]
+    fn text_accepts_letters_where_a_number_field_would_refuse_them() {
+        let mut f = text_form("", 16);
+        f.handle(FormEvent::Char('L'));
+        f.handle(FormEvent::Char('o'));
+        assert_eq!(text_of(&f).0, "Lo");
+    }
+
+    #[test]
+    fn typing_into_a_selected_text_field_replaces_the_whole_value() {
+        let mut f = text_form("Loki", 16);
+        assert!(text_of(&f).2, "starts whole-selected");
+        f.handle(FormEvent::Char('X'));
+        let (buffer, cursor, selected, _) = text_of(&f);
+        assert_eq!(buffer, "X");
+        assert_eq!(cursor, 1);
+        assert!(!selected);
+    }
+
+    #[test]
+    fn text_inserts_at_the_caret_in_insert_mode() {
+        let mut f = text_form("ac", 16);
+        f.handle(FormEvent::Home);
+        f.handle(FormEvent::Right); // caret between 'a' and 'c'
+        f.handle(FormEvent::Char('b'));
+        assert_eq!(text_of(&f).0, "abc");
+    }
+
+    #[test]
+    fn text_replaces_at_the_caret_in_overtype_mode() {
+        let mut f = text_form("abc", 16);
+        f.handle(FormEvent::Insert); // overtype on, deselects
+        f.handle(FormEvent::Home);
+        f.handle(FormEvent::Char('X'));
+        let (buffer, cursor, _, overtype) = text_of(&f);
+        assert!(overtype);
+        assert_eq!(buffer, "Xbc");
+        assert_eq!(cursor, 1);
+    }
+
+    #[test]
+    fn text_stops_accepting_input_at_max_len() {
+        let mut f = text_form("", 3);
+        for c in ['a', 'b', 'c', 'd', 'e'] {
+            f.handle(FormEvent::Char(c));
+        }
+        assert_eq!(text_of(&f).0, "abc");
+    }
+
+    #[test]
+    fn overtype_can_still_replace_once_a_text_field_is_full() {
+        let mut f = text_form("abc", 3);
+        f.handle(FormEvent::Insert);
+        f.handle(FormEvent::Home);
+        f.handle(FormEvent::Char('Z'));
+        // Replacing does not lengthen the buffer, so max_len must not block it.
+        assert_eq!(text_of(&f).0, "Zbc");
+    }
+
+    #[test]
+    fn backspace_and_delete_remove_on_either_side_of_the_caret() {
+        let mut f = text_form("abc", 16);
+        f.handle(FormEvent::End);
+        f.handle(FormEvent::Backspace);
+        assert_eq!(text_of(&f).0, "ab");
+        f.handle(FormEvent::Home);
+        f.handle(FormEvent::Delete);
+        assert_eq!(text_of(&f).0, "b");
+    }
+
+    #[test]
+    fn the_caret_is_counted_in_characters_not_bytes() {
+        // 'é' is two UTF-8 bytes but one cell, so the caret must land at 1.
+        let mut f = text_form("", 16);
+        f.handle(FormEvent::Char('é'));
+        let (buffer, cursor, ..) = text_of(&f);
+        assert_eq!(buffer, "é");
+        assert_eq!(cursor, 1, "caret counts characters, not bytes");
+        // And editing around it must not split the encoding.
+        f.handle(FormEvent::Char('x'));
+        f.handle(FormEvent::Home);
+        f.handle(FormEvent::Delete);
+        assert_eq!(text_of(&f).0, "x");
+    }
+
+    #[test]
+    fn enter_commits_the_text_and_advances_focus() {
+        let mut f = text_form("hi", 16);
+        let outcome = f.handle(FormEvent::Enter);
+        assert_eq!(outcome.actions, alloc::vec![TestOp::A]);
+        assert!(!outcome.close);
+    }
+
+    #[test]
+    fn an_emptied_text_field_still_commits_because_empty_is_a_value() {
+        // Unlike Number, where an unparseable buffer means "nothing typed",
+        // empty text is a legitimate value the caller may want.
+        let mut f = text_form("abc", 16);
+        f.handle(FormEvent::Backspace); // whole-selected -> clears
+        assert_eq!(text_of(&f).0, "");
+        let outcome = f.handle(FormEvent::Enter);
+        assert_eq!(outcome.actions, alloc::vec![TestOp::A]);
+    }
+
+    #[test]
+    fn left_and_right_move_the_caret_inside_a_text_field() {
+        let mut f = text_form("abc", 16);
+        f.handle(FormEvent::Left); // deselect, caret to 0
+        assert_eq!(text_of(&f).1, 0);
+        f.handle(FormEvent::Right);
+        assert_eq!(text_of(&f).1, 1);
+        // ...and never past either end.
+        for _ in 0..10 {
+            f.handle(FormEvent::Right);
+        }
+        assert_eq!(text_of(&f).1, 3);
+    }
+
+    #[test]
+    fn re_entering_a_text_field_reselects_the_whole_value() {
+        let mut f = text_form("abc", 16);
+        f.handle(FormEvent::Left); // deselect
+        assert!(!text_of(&f).2);
+        f.handle(FormEvent::Tab); // -> OK
+        f.handle(FormEvent::BackTab); // back onto the text field
+        assert!(text_of(&f).2, "focus-in reselects, as Turbo Vision did");
     }
 
     fn num() -> FormState<TestOp> {

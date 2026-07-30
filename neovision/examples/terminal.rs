@@ -51,6 +51,7 @@ enum Action {
     SetScale(&'static str),
     SetSound(bool),
     SetDelay(u32),
+    SetName(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -245,6 +246,18 @@ fn demo_form() -> FormState<Action> {
                 ],
                 1,
             ),
+            Field {
+                label: "Profile",
+                kind: FieldKind::Text {
+                    buffer: "default".to_string(),
+                    cursor: "default".len(),
+                    selected: true,
+                    overtype: false,
+                    max_len: 32,
+                    commit: |s| Action::SetName(s.to_string()),
+                },
+                restore: vec![Action::SetName("default".to_string())],
+            },
             Field {
                 label: "Sound",
                 kind: FieldKind::Toggle {

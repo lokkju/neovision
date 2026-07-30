@@ -63,6 +63,7 @@ enum Action {
     SetScale(&'static str),
     SetScanlines(bool),
     SetDelay(u32),
+    SetName(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -255,6 +256,18 @@ fn demo_form() -> FormState<Action> {
                 ],
                 1,
             ),
+            Field {
+                label: "Profile",
+                kind: FieldKind::Text {
+                    buffer: "default".to_string(),
+                    cursor: "default".len(),
+                    selected: true,
+                    overtype: false,
+                    max_len: 32,
+                    commit: |s| Action::SetName(s.to_string()),
+                },
+                restore: vec![Action::SetName("default".to_string())],
+            },
             Field {
                 label: "Scanlines",
                 kind: FieldKind::Toggle {
@@ -471,9 +484,13 @@ const README_SCRIPT: &[FormEvent] = &[
     FormEvent::Down,  // highlight Amber
     FormEvent::Enter, // choose it
     FormEvent::Tab,   // -> Scale
+    FormEvent::Tab,   // -> Profile, whole-selected on entry
+    FormEvent::Char('n'),
+    FormEvent::Char('e'),
+    FormEvent::Char('o'),
     FormEvent::Tab,   // -> Scanlines
     FormEvent::Enter, // toggle it on
-    FormEvent::Tab,   // -> Frame delay, whole-selected on entry
+    FormEvent::Tab,   // -> Frame delay
     FormEvent::Char('3'),
     FormEvent::Char('3'),
     // Ends on OK focused rather than pressed: pressing it closes the form,
