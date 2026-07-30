@@ -35,11 +35,6 @@ pub struct FormTheme {
     pub dim: u8,
     /// The panel title.
     pub title: u8,
-    /// Reserved for hosts that draw the edit caret as an attribute rather
-    /// than as a glyph. [`render`] itself never uses it: the caret is
-    /// reported out-of-band as a [`TextCursor`] by [`render_with_cursor`], so
-    /// that drawing it cannot overwrite the digit underneath.
-    pub cursor: u8,
     /// The whole-value selection highlight of a selected Number field. Reverse
     /// of the focused row bar (0x71) so selected digits read as a highlight
     /// block on the inverse row.
@@ -55,7 +50,6 @@ impl FormTheme {
         selected: 0x71,  // blue on light grey
         dim: 0x18,       // dark grey on blue
         title: 0x1E,     // bright yellow on blue
-        cursor: 0x1F,    // bright white block
         selection: 0x17, // grey-on-blue: reverse of the 0x71 focused row bar
     };
 }
