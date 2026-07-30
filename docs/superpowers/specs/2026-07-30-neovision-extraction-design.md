@@ -186,6 +186,9 @@ Still owed, and deliberately: validators, `TMemo`, `THistory`.
 
 ### Keys
 
+> The reasoning behind each of these, with precedents and costs, is recorded in
+> [`docs/ux-decisions.md`](../../ux-decisions.md). This section is a summary.
+
 Three traditions disagree about Enter, so a form is told which it belongs to
 via [`EnterReach`], defaulting to the conservative `OperateOnly`. Space is
 uniform under all of them and always operates the focused control, which is
@@ -198,6 +201,22 @@ same problem with a popup, which is what `Choice` already is.
 
 Arrows are trapped inside a cluster and Tab is the way out, because Turbo
 Vision and Windows agree on that even though BIOS has no opinion.
+
+**A radio caret moves without choosing**, which native radio groups do not do.
+ARIA's radio pattern, HTML and Windows all move the selection with the caret,
+and APG is explicit that this is right when the result is "nearly
+instantaneous" — and wrong when choosing "causes a network request" or other
+real work, because arrowing through the group then does that work at every
+step. For multi-select APG requires Enter or Space outright.
+
+Choosing is never free here: a cluster emits its item's action to the host,
+which may reconfigure a display or write to flash, so arrowing past three
+options would do it three times. Requiring a keystroke also keeps the two
+cluster styles alike under the rule that Space always operates the focused
+control, and lets an assistive reader inspect an option without selecting it.
+
+Because caret and choice can then sit on different rows, the renderer marks
+them separately: the caret by the selection bar, the choice by the bullet.
 
 ### Hotkeys are an inversion
 

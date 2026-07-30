@@ -1355,6 +1355,34 @@ mod tests {
     }
 
     #[test]
+    fn a_radio_caret_and_its_choice_are_marked_separately() {
+        // Now that the caret moves without choosing, the two can sit on
+        // different rows, and the renderer has to say which is which: the
+        // caret by the selection bar, the choice by the bullet.
+        let screen = Size::new(80, 25);
+        let mut f = with_cluster(ClusterStyle::Radio);
+        f.handle(FormEvent::Down); // caret to item 2, choice stays on item 1
+        let buf = flatten(render(&f, screen), screen);
+
+        let chosen = find_row(&buf, "Fast").expect("first item");
+        let caret = find_row(&buf, "Slow").expect("second item");
+
+        // The bullet marks the choice, which did not move.
+        assert_eq!(buf.get(col_of(&buf, chosen, b'(') + 1, chosen).ch, 0x07);
+        assert_eq!(buf.get(col_of(&buf, caret, b'(') + 1, caret).ch, b' ');
+
+        // The bar marks the caret, which did.
+        assert_eq!(
+            buf.get(col_of(&buf, caret, b'('), caret).attr,
+            Theme::DEFAULT.selected
+        );
+        assert_ne!(
+            buf.get(col_of(&buf, chosen, b'('), chosen).attr,
+            Theme::DEFAULT.selected
+        );
+    }
+
+    #[test]
     fn the_panel_grows_to_fit_a_multi_row_field() {
         let screen = Size::new(80, 25);
         let tall = flatten(render(&with_cluster(ClusterStyle::Radio), screen), screen);

@@ -14,6 +14,8 @@ use alloc::vec::Vec;
 ///
 /// Three traditions disagree about this, and all three are coherent, so the
 /// form is told which one it belongs to rather than the toolkit picking.
+///
+/// The reasoning, and the precedent behind each, is in `docs/ux-decisions.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EnterReach {
     /// Enter only ever operates the focused control. Accepting the form means
@@ -43,9 +45,20 @@ pub enum EnterReach {
 pub enum ClusterStyle {
     /// One of N, drawn `( )` / `(•)`.
     ///
-    /// Moving the caret also moves the selection, which is what Windows and
-    /// Turbo Vision both do: in a radio group the caret *is* the choice, so
-    /// there is nothing to confirm afterwards.
+    /// The caret moves without choosing; Space or Enter chooses what it is on.
+    ///
+    /// Native radio groups do the opposite — ARIA's radio pattern, HTML, and
+    /// Windows all move the selection with the caret. That is right when
+    /// choosing is free, and APG says so explicitly: selection should follow
+    /// focus when the result is "nearly instantaneous", and should not when it
+    /// "causes a network request" or other real work, because arrowing through
+    /// the group then does that work at every step.
+    ///
+    /// Choosing is never free here. A cluster emits its item's action to the
+    /// host, which may reconfigure a display or write to flash — so arrowing
+    /// past three options would do it three times. Requiring a keystroke to
+    /// choose also keeps the two cluster styles behaving alike, and lets a
+    /// screen reader read an option without selecting it.
     Radio,
     /// Any of N, drawn `[ ]` / `[X]`. The caret moves independently and Space
     /// flips whatever it is on.
@@ -906,18 +919,9 @@ impl<A: Clone> FormState<A> {
             return Some(FormOutcome::nothing());
         }
         let n = items.len();
-        let next = (*cursor as isize + delta).rem_euclid(n as isize) as usize;
-        *cursor = next;
-
-        // A radio caret is the selection, so moving it chooses.
-        if *style == ClusterStyle::Radio {
-            for (i, item) in items.iter_mut().enumerate() {
-                item.on = i == next;
-            }
-            let action = items[next].on_action.clone();
-            self.mark_dirty(focus);
-            return Some(FormOutcome::action(action));
-        }
+        *cursor = (*cursor as isize + delta).rem_euclid(n as isize) as usize;
+        // Moving never chooses, whatever the style: see `ClusterStyle::Radio`.
+        let _ = style;
         Some(FormOutcome::nothing())
     }
 
@@ -2194,17 +2198,52 @@ mod tests {
     }
 
     #[test]
-    fn a_radio_caret_selects_as_it_moves() {
+    fn a_radio_caret_moves_without_choosing() {
+        // Choosing emits an action the host acts on, which may be expensive or
+        // irreversible, so arrowing past an option must not do it. See
+        // `ClusterStyle::Radio`.
         let mut f = cluster_form(ClusterStyle::Radio);
         let outcome = f.handle(FormEvent::Down);
         let (cursor, on) = cluster_of(&f);
-        assert_eq!(cursor, 1);
-        assert_eq!(on, alloc::vec![false, true, false], "exactly one is set");
+        assert_eq!(cursor, 1, "the caret moved");
         assert_eq!(
-            outcome.actions,
-            alloc::vec![TestOp::On],
-            "moving the caret is the choice, so it speaks"
+            on,
+            alloc::vec![true, false, false],
+            "but the choice did not follow it"
         );
+        assert!(outcome.actions.is_empty(), "and nothing was emitted");
+    }
+
+    #[test]
+    fn arrowing_across_a_radio_cluster_emits_nothing_at_all() {
+        // The whole point: three options must not mean three actions.
+        let mut f = cluster_form(ClusterStyle::Radio);
+        let mut emitted = 0;
+        for _ in 0..6 {
+            emitted += f.handle(FormEvent::Down).actions.len();
+        }
+        assert_eq!(emitted, 0);
+    }
+
+    #[test]
+    fn space_chooses_the_radio_item_the_caret_reached() {
+        let mut f = cluster_form(ClusterStyle::Radio);
+        f.handle(FormEvent::Down);
+        let outcome = f.handle(FormEvent::Char(' '));
+        assert_eq!(cluster_of(&f).1, alloc::vec![false, true, false]);
+        assert_eq!(outcome.actions, alloc::vec![TestOp::On]);
+    }
+
+    #[test]
+    fn a_radio_caret_and_its_choice_may_sit_on_different_rows() {
+        // Which is why the renderer marks them separately: the caret by the
+        // selection bar, the choice by the bullet.
+        let mut f = cluster_form(ClusterStyle::Radio);
+        f.handle(FormEvent::Down);
+        f.handle(FormEvent::Down);
+        let (cursor, on) = cluster_of(&f);
+        assert_eq!(cursor, 2);
+        assert_eq!(on, alloc::vec![true, false, false]);
     }
 
     #[test]

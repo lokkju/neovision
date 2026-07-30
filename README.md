@@ -122,6 +122,13 @@ fn frame<A: Clone>(state: &mut FormState<A>, base: &CellBuffer, key: FormEvent) 
 }
 ```
 
+## Why it behaves as it does
+
+Keyboard behaviour in a text-mode form is a pile of small decisions, several of
+which depart from a dominant convention on purpose.
+[`docs/ux-decisions.md`](docs/ux-decisions.md) records each one with its
+reasoning, the precedent it follows or departs from, and what it costs.
+
 ## Generic over your actions
 
 `FormState<A>` carries values of *your* action type. It stores them, hands them
