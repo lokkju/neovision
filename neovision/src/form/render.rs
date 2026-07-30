@@ -256,6 +256,23 @@ fn value_column<A>(field: &Field<A>, focused: bool) -> String {
 /// Padding is 1 cell each side by default, widened to meet
 /// [`BUTTON_MIN_INNER`] for short labels — that's what makes a 2-char label
 /// like "OK" read as a button rather than a bracketed word.
+fn button_chrome_with(label: &str, is_default: bool) -> String {
+    let mut s = button_chrome(label);
+    if is_default {
+        // CP437 guillemets mark the button Enter presses. Same width as the
+        // square brackets they replace, so nothing shifts.
+        let mut chars: Vec<char> = s.chars().collect();
+        if let Some(first) = chars.first_mut() {
+            *first = '\u{00AB}';
+        }
+        if let Some(last) = chars.last_mut() {
+            *last = '\u{00BB}';
+        }
+        s = chars.into_iter().collect();
+    }
+    s
+}
+
 fn button_chrome(label: &str) -> String {
     let len = label.chars().count() as u16;
     let inner_w = (len + 2).max(BUTTON_MIN_INNER);
@@ -540,7 +557,13 @@ fn render_impl<A>(
         let chromes: Vec<(usize, String)> = fields[button_start..]
             .iter()
             .enumerate()
-            .map(|(k, f)| (button_start + k, button_chrome(&value_text(f))))
+            .map(|(k, f)| {
+                let is_default = matches!(f.kind, FieldKind::Button { default: true, .. });
+                (
+                    button_start + k,
+                    button_chrome_with(&value_text(f), is_default),
+                )
+            })
             .collect();
         let gap = BUTTON_GAP;
         let total_w: u16 = chromes
@@ -733,7 +756,8 @@ mod tests {
                     kind: FieldKind::Button {
                         label: "~O~K",
                         role: ButtonRole::Accept,
-                        action: None
+                        action: None,
+                        default: true
                     },
                     restore: alloc::vec![],
                 },
@@ -916,7 +940,8 @@ mod tests {
                     kind: FieldKind::Button {
                         label: "~O~K",
                         role: ButtonRole::Accept,
-                        action: None
+                        action: None,
+                        default: true
                     },
                     restore: Vec::new(),
                 },
@@ -925,7 +950,8 @@ mod tests {
                     kind: FieldKind::Button {
                         label: "~C~ancel",
                         role: ButtonRole::Reject,
-                        action: None
+                        action: None,
+                        default: false
                     },
                     restore: Vec::new(),
                 },
@@ -1121,7 +1147,8 @@ mod tests {
                     kind: FieldKind::Button {
                         label: "~O~K",
                         role: ButtonRole::Accept,
-                        action: None
+                        action: None,
+                        default: true
                     },
                     restore: Vec::new()
                 },
@@ -1181,7 +1208,8 @@ mod tests {
                     kind: FieldKind::Button {
                         label: "~O~K",
                         role: ButtonRole::Accept,
-                        action: None
+                        action: None,
+                        default: true
                     },
                     restore: Vec::new(),
                 },
@@ -1321,7 +1349,8 @@ mod tests {
                     kind: FieldKind::Button {
                         label: "~O~K",
                         role: ButtonRole::Accept,
-                        action: None
+                        action: None,
+                        default: true
                     },
                     restore: Vec::new(),
                 },

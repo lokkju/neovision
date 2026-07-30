@@ -27,8 +27,8 @@ use minifb::{Key, KeyRepeat, Scale, Window, WindowOptions};
 
 use neovision::neovision_core::font;
 use neovision::{
-    render_with_cursor, Cell, CellBuffer, CellDraw, ChoiceOption, CursorShape, Field, FieldKind,
-    FormEvent, FormState, LayerStack, Point, Size, TextCursor, Theme,
+    render_with_cursor, Cell, CellBuffer, CellDraw, ChoiceOption, CursorShape, EnterReach, Field,
+    FieldKind, FormEvent, FormState, LayerStack, Point, Size, TextCursor, Theme,
 };
 
 /// The 16 VGA colours as `0x00RRGGBB`, in hardware order.
@@ -275,6 +275,8 @@ fn choice(label: &'static str, options: &[(&str, Action)], selected: usize) -> F
 }
 
 fn demo_form() -> FormState<Action> {
+    // A dialog, so Enter finishes it. The library defaults to OperateOnly,
+    // where Enter only ever operates the focused control.
     FormState::new(
         " Video Settings ",
         vec![
@@ -341,6 +343,7 @@ fn demo_form() -> FormState<Action> {
             Field::cancel(),
         ],
     )
+    .with_enter_reach(EnterReach::AcceptWhenIdle)
 }
 
 fn desktop(size: Size, status: &str) -> CellBuffer {

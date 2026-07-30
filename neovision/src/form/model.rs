@@ -10,6 +10,34 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
+/// How far Enter reaches.
+///
+/// Three traditions disagree about this, and all three are coherent, so the
+/// form is told which one it belongs to rather than the toolkit picking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EnterReach {
+    /// Enter only ever operates the focused control. Accepting the form means
+    /// focusing a button and pressing it.
+    ///
+    /// The BIOS-setup habit: Enter opens a setting's value list, and you leave
+    /// the screen with an explicit key. The default, because it is the
+    /// conservative reading — a form that does not expect Enter to close it
+    /// never will.
+    #[default]
+    OperateOnly,
+    /// Enter operates a control that has something to operate, and otherwise
+    /// commits the entry field and presses the default button.
+    ///
+    /// The middle reading: typing a value and pressing Enter finishes the
+    /// dialog, but Enter on a dropdown still opens it.
+    AcceptWhenIdle,
+    /// Enter always presses the default button, except on a focused button,
+    /// which it presses instead. Nothing else consumes it.
+    ///
+    /// Turbo Vision's own rule, and Windows'. A dropdown then needs Space.
+    AlwaysAccept,
+}
+
 /// What pressing a button does to the form.
 ///
 /// The distinction Ok and Cancel actually encoded was never their labels — it
@@ -275,6 +303,12 @@ pub enum FieldKind<A> {
         role: ButtonRole,
         /// Emitted when pressed, before the form closes if it is going to.
         action: Option<A>,
+        /// Whether Enter presses this button from anywhere in the form.
+        ///
+        /// Turbo Vision's rule, and everyone's expectation of a dialog: fill
+        /// the fields in, press Enter, the dialog accepts. Only the first
+        /// button claiming it counts.
+        default: bool,
     },
 }
 
@@ -309,6 +343,7 @@ impl<A> Field<A> {
                 label: "~O~K",
                 role: ButtonRole::Accept,
                 action: None,
+                default: true,
             },
             restore: Vec::new(),
         }
@@ -323,6 +358,7 @@ impl<A> Field<A> {
                 label: "~C~ancel",
                 role: ButtonRole::Reject,
                 action: None,
+                default: false,
             },
             restore: Vec::new(),
         }
@@ -339,9 +375,22 @@ impl<A> Field<A> {
                 label,
                 role,
                 action,
+                default: false,
             },
             restore: Vec::new(),
         }
+    }
+
+    /// Make this button the one Enter presses from anywhere in the form.
+    ///
+    /// Panics if the field is not a button, since there is nothing sensible
+    /// to do with the request otherwise.
+    pub fn as_default(mut self) -> Self {
+        match &mut self.kind {
+            FieldKind::Button { default, .. } => *default = true,
+            _ => panic!("as_default() is only meaningful on a button"),
+        }
+        self
     }
 
     /// False for [`FieldKind::ReadOnly`], which focus traversal skips.
@@ -448,6 +497,8 @@ pub struct FormState<A> {
     /// Each field's `restore` actions as captured when the form opened.
     /// Parallel to `fields`.
     originals: Vec<Vec<A>>,
+    /// How far Enter reaches. See [`EnterReach`].
+    enter_reach: EnterReach,
     /// Whether the user has changed each field since the form opened.
     /// Parallel to `fields`.
     ///
@@ -592,7 +643,19 @@ impl<A: Clone> FormState<A> {
             popup: None,
             originals,
             dirty,
+            enter_reach: EnterReach::default(),
         }
+    }
+
+    /// Choose how far Enter reaches. See [`EnterReach`].
+    pub fn with_enter_reach(mut self, reach: EnterReach) -> Self {
+        self.enter_reach = reach;
+        self
+    }
+
+    /// How far Enter currently reaches.
+    pub fn enter_reach(&self) -> EnterReach {
+        self.enter_reach
     }
 
     /// Swap in a freshly built field list without disturbing the interaction.
@@ -629,19 +692,6 @@ impl<A: Clone> FormState<A> {
         if let Some(d) = self.dirty.get_mut(i) {
             *d = true;
         }
-    }
-
-    /// Index of the first accepting button, if the form has one.
-    fn ok_button(&self) -> Option<usize> {
-        self.fields.iter().position(|f| {
-            matches!(
-                f.kind,
-                FieldKind::Button {
-                    role: ButtonRole::Accept,
-                    ..
-                }
-            )
-        })
     }
 
     /// Feed one event. Returns the actions to apply and whether to close.
@@ -689,6 +739,7 @@ impl<A: Clone> FormState<A> {
             FormEvent::Hotkey(c) => self.on_hotkey(c),
             FormEvent::Escape => FormOutcome::closing(self.cancel_actions()),
             FormEvent::Enter => self.activate(),
+            FormEvent::Char(' ') => self.on_space(),
             FormEvent::Char(c) => {
                 self.type_char(c);
                 FormOutcome::nothing()
@@ -864,49 +915,69 @@ impl<A: Clone> FormState<A> {
         }
     }
 
-    fn activate(&mut self) -> FormOutcome<A> {
+    /// The button Enter presses from anywhere, if the form declares one.
+    fn default_button(&self) -> Option<usize> {
+        self.fields
+            .iter()
+            .position(|f| matches!(f.kind, FieldKind::Button { default: true, .. }))
+    }
+
+    /// Press the button at `idx`, whatever its role.
+    fn press_button(&mut self, idx: usize) -> FormOutcome<A> {
+        let Some(FieldKind::Button { role, action, .. }) = self.fields.get(idx).map(|f| &f.kind)
+        else {
+            return FormOutcome::nothing();
+        };
+        let role = *role;
+        let mut actions = Vec::new();
+        if let Some(a) = action.clone() {
+            actions.push(a);
+        }
+        match role {
+            // Accept keeps what the user changed, so nothing is replayed.
+            ButtonRole::Accept => FormOutcome::closing(actions),
+            ButtonRole::Reject => {
+                actions.extend(self.cancel_actions());
+                FormOutcome::closing(actions)
+            }
+            // Apply, Help, Reset: say something and stay put.
+            ButtonRole::Stay => FormOutcome {
+                actions,
+                close: false,
+            },
+        }
+    }
+
+    /// Press the default button, or do nothing if the form has none.
+    fn press_default(&mut self) -> FormOutcome<A> {
+        match self.default_button() {
+            Some(i) => self.press_button(i),
+            None => FormOutcome::nothing(),
+        }
+    }
+
+    /// Commit whatever the focused entry field holds, if it is one.
+    ///
+    /// Returns the actions to emit, and marks the field dirty when the value
+    /// genuinely changed. A number whose buffer will not parse commits
+    /// nothing and stays clean: Enter on an untouched field must not enrol it
+    /// in the Cancel restore set.
+    fn commit_entry(&mut self) -> Vec<A> {
         let focus = self.focus;
-        // Set by the arms that actually change a value, applied after the
-        // borrow of `self.fields` ends.
         let mut changed = false;
-        let mut advance_to_ok = false;
-        let outcome = match self.fields.get_mut(focus).map(|f| &mut f.kind) {
-            Some(FieldKind::Choice { selected, .. }) => {
-                self.popup = Some(Popup {
-                    field: focus,
-                    highlight: selected.unwrap_or(0),
-                });
-                // Opening the popup changes nothing yet; the Enter that picks
-                // an option is what marks the field dirty.
-                FormOutcome::nothing()
-            }
-            Some(FieldKind::Toggle {
-                on,
-                on_action,
-                off_action,
-            }) => {
-                *on = !*on;
-                let a = if *on {
-                    on_action.clone()
-                } else {
-                    off_action.clone()
-                };
-                changed = true;
-                FormOutcome::action(a)
-            }
+        let actions = match self.fields.get_mut(focus).map(|f| &mut f.kind) {
             Some(FieldKind::Text {
                 buffer,
                 selected,
                 commit,
                 ..
             }) => {
-                // Committing text is simpler than committing a number: there
-                // is nothing to parse and nothing to clamp, so an empty buffer
-                // is a legitimate value rather than "nothing was typed".
+                // Simpler than a number: nothing to parse, nothing to clamp,
+                // and an empty buffer is a legitimate value rather than
+                // "nothing was typed".
                 *selected = false;
-                let a = commit(buffer.as_str());
                 changed = true;
-                FormOutcome::action(a)
+                alloc::vec![commit(buffer.as_str())]
             }
             Some(FieldKind::Number {
                 value,
@@ -918,72 +989,150 @@ impl<A: Clone> FormState<A> {
                 commit,
                 ..
             }) => {
-                // An empty buffer means nothing was typed: no change, no action,
-                // and crucially not dirty either — Enter on an untouched number
-                // field must not enrol it in the Cancel restore set.
                 let Ok(parsed) = buffer.parse::<u32>() else {
-                    // Empty or invalid buffer: nothing to commit.
-                    return FormOutcome::nothing();
+                    return Vec::new();
                 };
                 let clamped = parsed.clamp(*min, *max);
                 // Normalise the live buffer to the clamped value either way.
                 *buffer = alloc::format!("{clamped}");
-                *cursor = buffer.len();
+                *cursor = buffer.chars().count();
                 *selected = false;
-                // Enter always advances to OK so the dialog can be dismissed
-                // — including when the value is unchanged. This is what makes
-                // the Ctrl+T timing dialog's "open, press Enter to accept the
-                // default and dismiss" flow work: a bare Enter must still
-                // land on OK so a second Enter closes the form, even though
-                // nothing was actually typed. A committed number leaves focus
-                // on OK so the flow terminates: the old standalone entry
-                // widget closed on Enter, and without this the user is left
-                // inside a form whose only obvious exit key (Escape) reverts
-                // what they just typed.
-                advance_to_ok = true;
                 if clamped == *value {
-                    // No real change: don't dirty, don't emit — but still
-                    // advance to OK (above).
-                    FormOutcome::nothing()
+                    Vec::new()
                 } else {
                     *value = clamped;
                     changed = true;
-                    FormOutcome::action(commit(clamped))
+                    alloc::vec![commit(clamped)]
                 }
             }
-            Some(FieldKind::Button { role, action, .. }) => {
-                let role = *role;
-                let emitted = action.clone();
-                let mut actions = Vec::new();
-                if let Some(a) = emitted {
-                    actions.push(a);
-                }
-                match role {
-                    // Accept keeps what the user changed, so nothing is
-                    // replayed on the way out.
-                    ButtonRole::Accept => FormOutcome::closing(actions),
-                    ButtonRole::Reject => {
-                        actions.extend(self.cancel_actions());
-                        FormOutcome::closing(actions)
-                    }
-                    // Apply, Help, Reset: say something and stay put.
-                    ButtonRole::Stay => FormOutcome {
-                        actions,
-                        close: false,
-                    },
-                }
-            }
-            Some(FieldKind::ReadOnly(_)) | None => FormOutcome::nothing(),
+            _ => Vec::new(),
         };
         if changed {
             self.mark_dirty(focus);
         }
-        if advance_to_ok {
-            if let Some(i) = self.ok_button() {
-                self.focus = i;
+        actions
+    }
+
+    /// What Enter does.
+    ///
+    /// Enter operates the focused control where there is something to
+    /// operate — press a button, open a dropdown, flip a toggle — and
+    /// otherwise means "I am finished": it commits the entry field and
+    /// presses the default button.
+    ///
+    /// Opening a dropdown with Enter follows the BIOS-setup tradition this
+    /// toolkit descends from, where highlighting a setting and pressing Enter
+    /// gives you its value list. Windows dialogs reserve Enter for the
+    /// default button and open combo boxes with Alt+Down instead; both are
+    /// coherent, and this one suits a text-mode toolkit better.
+    ///
+    /// [`Self::on_space`] is the uniform partner: Space always operates the
+    /// focused control, so nothing depends on remembering which kinds Enter
+    /// treats specially.
+    fn activate(&mut self) -> FormOutcome<A> {
+        let focus = self.focus;
+        // A focused button is pressed under every policy: if you tabbed to
+        // Cancel, Enter presses Cancel rather than reaching past it.
+        if matches!(
+            self.fields.get(focus).map(|f| &f.kind),
+            Some(FieldKind::Button { .. })
+        ) {
+            return self.press_button(focus);
+        }
+        if self.enter_reach == EnterReach::AlwaysAccept {
+            let committed = self.commit_entry();
+            let mut outcome = self.press_default();
+            let mut actions = committed;
+            actions.append(&mut outcome.actions);
+            outcome.actions = actions;
+            return outcome;
+        }
+        match self.fields.get(focus).map(|f| &f.kind) {
+            Some(FieldKind::Choice { selected, .. }) => {
+                self.popup = Some(Popup {
+                    field: focus,
+                    highlight: selected.unwrap_or(0),
+                });
+                // Opening changes nothing yet; the Enter that picks an option
+                // is what marks the field dirty.
+                FormOutcome::nothing()
+            }
+            Some(FieldKind::Button { .. }) => self.press_button(focus),
+            // A toggle has something to operate, so Enter operates it rather
+            // than reaching past it to the default button.
+            Some(FieldKind::Toggle { .. }) => self.flip_toggle(),
+            Some(FieldKind::Text { .. }) | Some(FieldKind::Number { .. }) => {
+                let committed = self.commit_entry();
+                if self.enter_reach == EnterReach::OperateOnly {
+                    // Commit the value, but stop there: this form does not
+                    // expect Enter to close it.
+                    return FormOutcome {
+                        actions: committed,
+                        close: false,
+                    };
+                }
+                let mut outcome = self.press_default();
+                // The field's own value is reported before whatever the
+                // button had to say about it.
+                let mut actions = committed;
+                actions.append(&mut outcome.actions);
+                outcome.actions = actions;
+                outcome
+            }
+            _ if self.enter_reach == EnterReach::OperateOnly => FormOutcome::nothing(),
+            _ => self.press_default(),
+        }
+    }
+
+    /// What Space does: act on whatever is focused.
+    ///
+    /// The uniform partner to Enter. Space always means "operate this
+    /// control" — flip the toggle, open the dropdown, press the button —
+    /// while Enter additionally means "I am finished" on the fields where
+    /// there is nothing to operate. Overlapping is deliberate: Windows has
+    /// Space and Enter both pressing a focused button, and having one key
+    /// that always works keeps the other free to mean accept.
+    ///
+    /// A text field is the exception, since there Space has to mean a space.
+    fn on_space(&mut self) -> FormOutcome<A> {
+        let focus = self.focus;
+        match self.fields.get(focus).map(|f| &f.kind) {
+            Some(FieldKind::Toggle { .. }) => self.flip_toggle(),
+            Some(FieldKind::Choice { selected, .. }) => {
+                self.popup = Some(Popup {
+                    field: focus,
+                    highlight: selected.unwrap_or(0),
+                });
+                FormOutcome::nothing()
+            }
+            Some(FieldKind::Button { .. }) => self.press_button(focus),
+            // Text takes a literal space; Number ignores it.
+            _ => {
+                self.type_char(' ');
+                FormOutcome::nothing()
             }
         }
-        outcome
+    }
+
+    /// Flip the focused toggle and report the action it stands for.
+    fn flip_toggle(&mut self) -> FormOutcome<A> {
+        let focus = self.focus;
+        if let Some(FieldKind::Toggle {
+            on,
+            on_action,
+            off_action,
+        }) = self.fields.get_mut(focus).map(|f| &mut f.kind)
+        {
+            *on = !*on;
+            let a = if *on {
+                on_action.clone()
+            } else {
+                off_action.clone()
+            };
+            self.mark_dirty(focus);
+            return FormOutcome::action(a);
+        }
+        FormOutcome::nothing()
     }
 
     fn handle_popup(&mut self, ev: FormEvent) -> FormOutcome<A> {
@@ -1133,7 +1282,8 @@ mod tests {
                 kind: FieldKind::Button {
                     label: "~O~K",
                     role: ButtonRole::Accept,
-                    action: None
+                    action: None,
+                    default: true
                 },
                 restore: Vec::new(),
             },
@@ -1142,7 +1292,8 @@ mod tests {
                 kind: FieldKind::Button {
                     label: "~C~ancel",
                     role: ButtonRole::Reject,
-                    action: None
+                    action: None,
+                    default: false
                 },
                 restore: Vec::new(),
             },
@@ -1351,12 +1502,14 @@ mod tests {
     }
 
     #[test]
-    fn number_with_an_empty_buffer_emits_nothing() {
-        let mut f = form();
+    fn number_with_an_empty_buffer_commits_nothing_but_still_accepts() {
+        let mut f = form().with_enter_reach(EnterReach::AcceptWhenIdle);
         f.set_focus(3);
         let out = f.handle(FormEvent::Enter);
+        // Nothing was typed, so nothing is committed — but Enter still means
+        // "I am finished", so it reaches the default button regardless.
         assert!(out.actions.is_empty());
-        assert!(!out.close);
+        assert!(out.close);
     }
 
     #[test]
@@ -1385,7 +1538,8 @@ mod tests {
                     kind: FieldKind::Button {
                         label: "~O~K",
                         role: ButtonRole::Accept,
-                        action: None
+                        action: None,
+                        default: true
                     },
                     restore: Vec::new()
                 },
@@ -1428,7 +1582,8 @@ mod tests {
                     kind: FieldKind::Button {
                         label: "~O~K",
                         role: ButtonRole::Accept,
-                        action: None
+                        action: None,
+                        default: true
                     },
                     restore: Vec::new()
                 },
@@ -1532,20 +1687,21 @@ mod tests {
     }
 
     #[test]
-    fn committing_a_number_moves_focus_to_the_ok_button() {
-        let mut f = form();
+    fn committing_a_number_accepts_the_form_in_one_keystroke() {
+        let mut f = form().with_enter_reach(EnterReach::AcceptWhenIdle);
         f.set_focus(3);
         f.handle(FormEvent::Char('3'));
         f.handle(FormEvent::Char('0'));
-        f.handle(FormEvent::Enter);
-        assert_eq!(
-            f.focus(),
-            4,
-            "Enter on a number field lands on OK so a second Enter finishes"
+        let outcome = f.handle(FormEvent::Enter);
+        // Type a value, press Enter, done — the entry field commits and then
+        // lets Enter through to the default button rather than swallowing it.
+        assert!(
+            outcome.close,
+            "Enter on an entry field presses the default button"
         );
         assert!(
-            f.handle(FormEvent::Enter).close,
-            "so Ctrl+T, type, Enter, Enter completes"
+            !outcome.actions.is_empty(),
+            "and the typed value is reported before the form closes"
         );
     }
 
@@ -1636,7 +1792,8 @@ mod tests {
                     kind: FieldKind::Button {
                         label: "~C~ancel",
                         role: ButtonRole::Reject,
-                        action: None
+                        action: None,
+                        default: false
                     },
                     restore: Vec::new(),
                 },
@@ -1671,6 +1828,130 @@ mod tests {
     fn a_marker_never_occupies_a_cell() {
         let (text, _) = parse_mnemonic("~O~pen");
         assert_eq!(text.chars().count(), 4, "tildes must not be drawn");
+    }
+
+    #[test]
+    fn space_presses_a_focused_button() {
+        let mut f = hotkey_form();
+        f.set_focus(2); // OK
+        let outcome = f.handle(FormEvent::Char(' '));
+        assert!(outcome.close, "Space operates whatever is focused");
+    }
+
+    #[test]
+    fn space_opens_a_dropdown_just_as_enter_does() {
+        let mut f = form();
+        f.handle(FormEvent::Char(' '));
+        assert!(f.popup().is_some(), "Space is the uniform operate key");
+    }
+
+    #[test]
+    fn enter_opens_a_dropdown_too_which_is_the_bios_setup_habit() {
+        let mut f = form();
+        f.handle(FormEvent::Enter);
+        assert!(f.popup().is_some());
+    }
+
+    #[test]
+    fn space_flips_a_toggle() {
+        let mut f = hotkey_form();
+        let outcome = f.handle(FormEvent::Char(' '));
+        assert_eq!(outcome.actions, alloc::vec![TestOp::On]);
+        assert!(!outcome.close);
+    }
+
+    #[test]
+    fn space_in_a_text_field_types_a_space_rather_than_operating_anything() {
+        let mut f = text_form("", 16);
+        f.handle(FormEvent::Char('a'));
+        f.handle(FormEvent::Char(' '));
+        f.handle(FormEvent::Char('b'));
+        assert_eq!(text_of(&f).0, "a b");
+    }
+
+    #[test]
+    fn enter_reaches_the_default_button_from_a_toggle_only_after_it_flips() {
+        // A toggle has something to operate, so Enter operates it rather than
+        // reaching past it.
+        let mut f = hotkey_form();
+        let outcome = f.handle(FormEvent::Enter);
+        assert_eq!(outcome.actions, alloc::vec![TestOp::On]);
+        assert!(!outcome.close);
+    }
+
+    #[test]
+    fn a_form_without_a_default_button_simply_does_not_accept_on_enter() {
+        let mut f = text_form("hi", 16);
+        // text_form's second field is a plain OK built by Field::ok(), which
+        // is default; strip that to prove the fallback.
+        let mut fields = alloc::vec![];
+        for (i, fld) in f.fields().iter().enumerate() {
+            if i == 0 {
+                fields.push(fld.clone());
+            }
+        }
+        let mut bare = FormState::new("T", fields);
+        let outcome = bare.handle(FormEvent::Enter);
+        assert!(!outcome.close, "nothing to press, so nothing happens");
+        let _ = f.handle(FormEvent::Escape);
+    }
+
+    #[test]
+    fn enter_does_not_close_a_form_by_default() {
+        // OperateOnly is the default: a form that does not expect Enter to
+        // close it never will, whatever its buttons say.
+        let mut f = text_form("hi", 16);
+        assert_eq!(f.enter_reach(), EnterReach::OperateOnly);
+        let outcome = f.handle(FormEvent::Enter);
+        assert!(!outcome.close, "Enter commits but does not accept");
+        assert_eq!(
+            outcome.actions,
+            alloc::vec![TestOp::A],
+            "the value is still committed"
+        );
+    }
+
+    #[test]
+    fn always_accept_reaches_the_default_button_even_from_a_dropdown() {
+        let mut f = form().with_enter_reach(EnterReach::AlwaysAccept);
+        let outcome = f.handle(FormEvent::Enter);
+        assert!(
+            f.popup().is_none(),
+            "under AlwaysAccept nothing else consumes Enter"
+        );
+        assert!(outcome.close);
+    }
+
+    #[test]
+    fn always_accept_still_presses_a_focused_button_rather_than_the_default() {
+        let mut f = role_form().with_enter_reach(EnterReach::AlwaysAccept);
+        f.set_focus(3); // Cancel
+        let outcome = f.handle(FormEvent::Enter);
+        assert!(outcome.close);
+        assert!(
+            outcome.actions.contains(&TestOp::Off) || outcome.actions.is_empty(),
+            "Cancel was pressed, not OK"
+        );
+    }
+
+    #[test]
+    fn accept_when_idle_leaves_the_dropdown_its_enter() {
+        let mut f = form().with_enter_reach(EnterReach::AcceptWhenIdle);
+        f.handle(FormEvent::Enter);
+        assert!(f.popup().is_some(), "a dropdown still opens on Enter");
+    }
+
+    #[test]
+    fn space_operates_the_control_under_every_policy() {
+        for reach in [
+            EnterReach::OperateOnly,
+            EnterReach::AcceptWhenIdle,
+            EnterReach::AlwaysAccept,
+        ] {
+            let mut f = form().with_enter_reach(reach);
+            f.handle(FormEvent::Char(' '));
+            assert!(f.popup().is_some(), "Space is uniform across {reach:?}");
+        }
     }
 
     fn role_form() -> FormState<TestOp> {
@@ -1788,7 +2069,8 @@ mod tests {
                     kind: FieldKind::Button {
                         label: "~O~K",
                         role: ButtonRole::Accept,
-                        action: None
+                        action: None,
+                        default: true
                     },
                     restore: alloc::vec![],
                 },
@@ -1797,7 +2079,8 @@ mod tests {
                     kind: FieldKind::Button {
                         label: "~C~ancel",
                         role: ButtonRole::Reject,
-                        action: None
+                        action: None,
+                        default: false
                     },
                     restore: alloc::vec![],
                 },
@@ -1882,7 +2165,8 @@ mod tests {
                     kind: FieldKind::Button {
                         label: "~O~K",
                         role: ButtonRole::Accept,
-                        action: None
+                        action: None,
+                        default: true
                     },
                     restore: alloc::vec![],
                 },
@@ -1990,11 +2274,14 @@ mod tests {
     }
 
     #[test]
-    fn enter_commits_the_text_and_advances_focus() {
-        let mut f = text_form("hi", 16);
+    fn enter_commits_the_text_and_accepts_the_form() {
+        let mut f = text_form("hi", 16).with_enter_reach(EnterReach::AcceptWhenIdle);
         let outcome = f.handle(FormEvent::Enter);
         assert_eq!(outcome.actions, alloc::vec![TestOp::A]);
-        assert!(!outcome.close);
+        assert!(
+            outcome.close,
+            "the text commits, then Enter reaches the default button"
+        );
     }
 
     #[test]
@@ -2061,7 +2348,8 @@ mod tests {
                     kind: FieldKind::Button {
                         label: "~O~K",
                         role: ButtonRole::Accept,
-                        action: None
+                        action: None,
+                        default: true
                     },
                     restore: Vec::new()
                 },
@@ -2150,34 +2438,19 @@ mod tests {
     }
 
     #[test]
-    fn enter_on_unchanged_value_advances_focus_to_ok() {
-        // Regression for the "open a dialog, press Enter twice to accept the
-        // default and dismiss" flow: Enter on an unchanged value must still
-        // advance focus to OK, so the second Enter closes the form, even
-        // though nothing was actually typed.
-        let mut f = num(); // buffer "120" == value 120; fields: [Number, OK]
-        let ok_index = f
-            .fields()
-            .iter()
-            .position(|fld| {
-                matches!(
-                    fld.kind,
-                    FieldKind::Button {
-                        label: "~O~K",
-                        role: ButtonRole::Accept,
-                        action: None
-                    }
-                )
-            })
-            .expect("form has an OK button");
+    fn enter_on_an_unchanged_value_accepts_without_dirtying_it() {
+        // "Open the dialog, press Enter to take the defaults" — Enter must
+        // finish the form even when nothing was typed, and must not enrol the
+        // untouched field in the Cancel restore set on the way out.
+        let mut f = num().with_enter_reach(EnterReach::AcceptWhenIdle);
         let out = f.handle(FormEvent::Enter);
         assert!(out.actions.is_empty(), "unchanged value emits no action");
-        assert_eq!(
-            f.focus(),
-            ok_index,
-            "Enter on an unchanged value still advances focus to OK"
-        );
-        // The field was never dirtied, so Escape afterward restores nothing.
+        assert!(out.close, "Enter still reaches the default button");
+
+        // A fresh form, to check the field stayed clean rather than merely
+        // silent: Escape must restore nothing.
+        let mut f = num().with_enter_reach(EnterReach::AcceptWhenIdle);
+        f.handle(FormEvent::Enter);
         let cancel = f.handle(FormEvent::Escape);
         assert!(
             cancel.actions.is_empty(),
