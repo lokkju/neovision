@@ -20,6 +20,16 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
+    # Narrows the OIDC claim: crates.io only honours a token minted by a run
+    # in this environment, on top of pinning the workflow filename. The
+    # environment is restricted to `main` by GitHub itself, so the rule
+    # survives any later widening of this workflow's triggers.
+    #
+    # Deliberately no required reviewers. This job runs on every push to main
+    # and is a no-op unless there is something to release, so an approval gate
+    # would prompt on unrelated merges and train the reviewer to click through.
+    # The real human gate is merging the release PR.
+    environment: release
     permissions:
       contents: write
       # Required to request the OIDC token. Without it the exchange fails.
