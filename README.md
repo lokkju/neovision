@@ -143,7 +143,7 @@ actually touched.
 ## Status
 
 Pre-1.0 and honest about it. The form widgets, the renderer, and the compositor
-are covered by 226 tests. The API will still move.
+are covered by 235 tests. The API will still move.
 
 Deliberately **not** implemented yet: Turbo Vision's `TGroup` / `TApplication`
 layer — a view tree, a desktop, stacked modal dialogs, z-ordered windows with

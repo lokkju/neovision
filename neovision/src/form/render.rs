@@ -130,36 +130,60 @@ fn row_offsets<A>(fields: &[Field<A>], upto: usize) -> (Vec<u16>, u16) {
     (offsets, row)
 }
 
-/// Visible width of a [`FieldKind::Text`] value, inside its brackets.
-const TEXT_VISIBLE_W: u16 = VALUE_W - 2;
-
 /// First visible character of a text field, derived from the caret alone.
 ///
 /// Stateless on purpose: keeping a `first_visible` in the model would be a
 /// second source of truth that has to be nudged back into agreement with the
 /// caret on every edit. Deriving it means the two cannot disagree.
-fn text_scroll(cursor: usize) -> usize {
-    cursor.saturating_sub(TEXT_VISIBLE_W as usize - 1)
+fn text_scroll(cursor: usize, layout: Layout) -> usize {
+    cursor.saturating_sub(layout.text_visible_w() as usize - 1)
 }
 
-/// Former name of [`Theme`].
+/// The geometry of a form's panel: how wide its two columns are.
 ///
-/// Renamed because it themes more than a form: the panel, its labels and
-/// values, the selection bar, the caret and now accelerators, with clusters
-/// and scrollbars still to come.
-#[deprecated(since = "0.2.0", note = "renamed to `Theme`")]
-pub type FormTheme = Theme;
+/// Separate from [`Theme`] because they answer different questions — a theme
+/// says what things look like, a layout says how much room they get — and a
+/// caller usually wants to change one without touching the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Layout {
+    /// Width of the label column, in cells. Longer labels are truncated.
+    pub label_w: u16,
+    /// Width of the value column, in cells, brackets included.
+    pub value_w: u16,
+}
 
-/// Former name of [`HotkeyAttrs`].
-#[deprecated(since = "0.2.0", note = "renamed to `HotkeyAttrs`")]
-pub type HotkeyTheme = HotkeyAttrs;
+impl Default for Layout {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
 
-/// Width of the label column, in cells.
-const LABEL_W: u16 = 14;
-/// Width of the value column, in cells.
-const VALUE_W: u16 = 22;
-/// Inner width: label + gap + value.
-const INNER_W: u16 = LABEL_W + 1 + VALUE_W;
+impl Layout {
+    /// Wide enough for the labels and values a settings dialog tends to have,
+    /// and narrow enough that two fit side by side on an 80-column screen.
+    pub const DEFAULT: Layout = Layout {
+        label_w: 14,
+        value_w: 22,
+    };
+
+    /// Narrowest a layout can usefully be: a bracket, a character, a bracket.
+    const MIN_VALUE_W: u16 = 4;
+
+    /// The panel's inner width: label, a gap, value.
+    pub fn inner_w(&self) -> u16 {
+        self.label_w + 1 + self.value_w.max(Self::MIN_VALUE_W)
+    }
+
+    /// Visible width of a text value, inside its brackets.
+    pub fn text_visible_w(&self) -> u16 {
+        self.value_w.max(Self::MIN_VALUE_W).saturating_sub(2)
+    }
+
+    /// Column the value starts at, within the panel body.
+    fn value_x(&self) -> u16 {
+        2 + self.label_w
+    }
+}
 
 /// Minimum inner width (excluding the brackets) of a button's chrome, so a
 /// short label like "OK" still reads as a button rather than a bare word in
@@ -232,9 +256,9 @@ fn fit(s: &str, width: usize) -> String {
 }
 
 /// The value column for a non-Button field: bracketed and padded to
-/// `VALUE_W` for every editable kind (`[ value... ]`), so the closing
+/// the value column for every editable kind (`[ value... ]`), so the closing
 /// bracket lines up in a column down the panel; unbracketed (but still
-/// padded/truncated to `VALUE_W`) for `ReadOnly`, whose absence of chrome is
+/// padded/truncated to the column) for `ReadOnly`, whose absence of chrome is
 /// itself part of what marks it non-editable — a dim attribute alone is not
 /// a strong enough signal that a row cannot be edited.
 ///
@@ -242,9 +266,9 @@ fn fit(s: &str, width: usize) -> String {
 /// truncation — is what keeps an oversized value from overwriting the right
 /// border: `write_str` only stops at the layer's own edge, which for the
 /// body layer includes the border column itself.
-fn value_column<A>(field: &Field<A>, focused: bool) -> String {
+fn value_column<A>(field: &Field<A>, focused: bool, layout: Layout) -> String {
     match &field.kind {
-        FieldKind::ReadOnly(_) => fit(&value_text(field), VALUE_W as usize),
+        FieldKind::ReadOnly(_) => fit(&value_text(field), layout.value_w as usize),
         FieldKind::Number {
             value,
             buffer,
@@ -267,21 +291,18 @@ fn value_column<A>(field: &Field<A>, focused: bool) -> String {
             // Fixed-width digit slot (4-cap) + trailing cursor slot, so `]`,
             // the unit and the range never shift as digits are typed.
             let s = alloc::format!("[{:<4} ]{unit} ({min}-{max})", digits);
-            fit(&s, VALUE_W as usize)
+            fit(&s, layout.value_w as usize)
         }
         FieldKind::Text { buffer, cursor, .. } => {
-            let first = text_scroll(*cursor);
-            let window: String = buffer
-                .chars()
-                .skip(first)
-                .take(TEXT_VISIBLE_W as usize)
-                .collect();
-            alloc::format!("[{}]", fit(&window, TEXT_VISIBLE_W as usize))
+            let visible = layout.text_visible_w() as usize;
+            let first = text_scroll(*cursor, layout);
+            let window: String = buffer.chars().skip(first).take(visible).collect();
+            alloc::format!("[{}]", fit(&window, visible))
         }
-        _ => {
-            let inner_w = VALUE_W.saturating_sub(2) as usize;
-            alloc::format!("[{}]", fit(&value_text(field), inner_w))
-        }
+        _ => alloc::format!(
+            "[{}]",
+            fit(&value_text(field), layout.text_visible_w() as usize)
+        ),
     }
 }
 
@@ -407,6 +428,7 @@ fn render_impl<A>(
     state: &FormState<A>,
     screen: Size,
     theme: Theme,
+    layout: Layout,
 ) -> (Vec<Layer>, Option<TextCursor>) {
     let mut layers = Vec::new();
     let mut text_cursor: Option<TextCursor> = None;
@@ -420,7 +442,7 @@ fn render_impl<A>(
     // one row per button.
     let trailer_rows = if has_buttons { 2 } else { 0 };
     let panel_h = field_rows + trailer_rows + 2;
-    let panel = centred(Size::new(INNER_W + 2, panel_h), screen);
+    let panel = centred(Size::new(layout.inner_w() + 2, panel_h), screen);
 
     layers.push(shadow_layer(panel, screen));
 
@@ -461,7 +483,7 @@ fn render_impl<A>(
         };
         // Paint the whole row so the selection bar spans the panel.
         body.fill(
-            Rect::new(1, row, INNER_W, 1),
+            Rect::new(1, row, layout.inner_w(), 1),
             LayerCell::Opaque(Cell {
                 ch: b' ',
                 attr: label_attr,
@@ -476,7 +498,7 @@ fn render_impl<A>(
             field.label,
             label_attr,
             None,
-            LABEL_W,
+            layout.label_w,
         );
         if let FieldKind::Cluster {
             style,
@@ -484,11 +506,13 @@ fn render_impl<A>(
             cursor,
         } = &field.kind
         {
-            draw_cluster(&mut body, row, *style, items, *cursor, focused, theme);
+            draw_cluster(
+                &mut body, row, *style, items, *cursor, focused, theme, layout,
+            );
         } else {
             body.write_str(
-                Point::new(2 + LABEL_W, row),
-                &value_column(field, focused),
+                Point::new(layout.value_x(), row),
+                &value_column(field, focused, layout),
                 value_attr,
             );
         }
@@ -505,12 +529,12 @@ fn render_impl<A>(
             } = &field.kind
             {
                 if *selected {
-                    let digits_start = 2 + LABEL_W + 1; // past the '['
-                                                        // `Layer::get` returns a `LayerCell` enum, not a `Cell`,
-                                                        // so the digits already drawn by `value_column` above
-                                                        // can't be read back and re-attributed in place — instead
-                                                        // re-write each digit char from `buffer` with the
-                                                        // selection attribute.
+                    let digits_start = layout.value_x() + 1; // past the '['
+                                                             // `Layer::get` returns a `LayerCell` enum, not a `Cell`,
+                                                             // so the digits already drawn by `value_column` above
+                                                             // can't be read back and re-attributed in place — instead
+                                                             // re-write each digit char from `buffer` with the
+                                                             // selection attribute.
                     for (i, ch) in buffer.bytes().enumerate() {
                         body.put(
                             digits_start + i as u16,
@@ -542,12 +566,12 @@ fn render_impl<A>(
                     selected,
                     overtype,
                     ..
-                } => Some((*cursor - text_scroll(*cursor), *selected, *overtype)),
+                } => Some((*cursor - text_scroll(*cursor, layout), *selected, *overtype)),
                 _ => None,
             };
             if let Some((cursor, selected, overtype)) = entry {
                 if !selected {
-                    let local_x = 2 + LABEL_W + 1 + cursor as u16; // past label, gap, '['
+                    let local_x = layout.value_x() + 1 + cursor as u16; // past '['
                     text_cursor = Some(TextCursor {
                         col: panel.origin.x + local_x,
                         row: panel.origin.y + row,
@@ -578,12 +602,12 @@ fn render_impl<A>(
         );
         body.draw_hline(
             Point::new(1, sep_row),
-            INNER_W,
+            layout.inner_w(),
             BoxChars::DOUBLE.h,
             theme.normal,
         );
         body.put(
-            INNER_W + 1,
+            layout.inner_w() + 1,
             sep_row,
             Cell {
                 ch: BoxChars::DOUBLE.tee_r,
@@ -594,7 +618,7 @@ fn render_impl<A>(
         // Button row background, plain — only the focused button's own
         // chrome (not the row) gets the selected attribute.
         body.fill(
-            Rect::new(1, btn_row, INNER_W, 1),
+            Rect::new(1, btn_row, layout.inner_w(), 1),
             LayerCell::Opaque(Cell {
                 ch: b' ',
                 attr: theme.normal,
@@ -618,7 +642,7 @@ fn render_impl<A>(
             .map(|(_, s)| s.chars().count() as u16)
             .sum::<u16>()
             + gap.saturating_mul(chromes.len().saturating_sub(1) as u16);
-        let mut x = 1 + (INNER_W.saturating_sub(total_w)) / 2;
+        let mut x = 1 + (layout.inner_w().saturating_sub(total_w)) / 2;
         for (idx, chrome) in &chromes {
             // The focused button's *whole* chrome (brackets and padding, not
             // just the label) carries the selected attribute. Highlighting the
@@ -666,7 +690,7 @@ fn render_impl<A>(
     layers.push(body);
 
     if let Some(popup) = state.popup() {
-        push_popup(&mut layers, state, popup, panel, screen, theme);
+        push_popup(&mut layers, state, popup, panel, screen, theme, layout);
     }
 
     (layers, text_cursor)
@@ -674,7 +698,7 @@ fn render_impl<A>(
 
 /// Draw `state` into layers, bottom-to-top.
 pub fn render<A>(state: &FormState<A>, screen: Size) -> Vec<Layer> {
-    render_impl(state, screen, Theme::DEFAULT).0
+    render_impl(state, screen, Theme::DEFAULT, Layout::DEFAULT).0
 }
 
 /// As `render`, but also returns the text-cursor descriptor for the
@@ -687,7 +711,7 @@ pub fn render_with_cursor<A>(
     state: &FormState<A>,
     screen: Size,
 ) -> (Vec<Layer>, Option<TextCursor>) {
-    render_impl(state, screen, Theme::DEFAULT)
+    render_impl(state, screen, Theme::DEFAULT, Layout::DEFAULT)
 }
 
 /// As [`render_with_cursor`], but drawn with the caller's own [`Theme`].
@@ -701,8 +725,9 @@ pub fn render_themed<A>(
     state: &FormState<A>,
     screen: Size,
     theme: Theme,
+    layout: Layout,
 ) -> (Vec<Layer>, Option<TextCursor>) {
-    render_impl(state, screen, theme)
+    render_impl(state, screen, theme, layout)
 }
 
 fn push_popup<A>(
@@ -712,6 +737,7 @@ fn push_popup<A>(
     panel: Rect,
     screen: Size,
     theme: Theme,
+    layout: Layout,
 ) {
     let FieldKind::Choice { options, .. } = &state.fields()[popup.field].kind else {
         return;
@@ -744,7 +770,7 @@ fn push_popup<A>(
     let visible = without_bar;
     let w = inner_w + 2 + bar_w;
     let h = visible as u16 + 2;
-    let x = (panel.left() + LABEL_W).min(screen.w.saturating_sub(w));
+    let x = (panel.left() + layout.label_w).min(screen.w.saturating_sub(w));
 
     // Scroll so the highlight is always visible.
     let first = popup.highlight.saturating_sub(visible.saturating_sub(1));
@@ -797,6 +823,7 @@ fn draw_cluster<A>(
     cursor: usize,
     focused: bool,
     theme: Theme,
+    layout: Layout,
 ) {
     for (i, item) in items.iter().enumerate() {
         let row = first_row + i as u16;
@@ -811,7 +838,7 @@ fn draw_cluster<A>(
         // the first row's selection bar across the label column.
         if i > 0 {
             body.fill(
-                Rect::new(1, row, LABEL_W + 1, 1),
+                Rect::new(1, row, layout.label_w + 1, 1),
                 LayerCell::Opaque(Cell {
                     ch: b' ',
                     attr: theme.normal,
@@ -820,7 +847,7 @@ fn draw_cluster<A>(
         }
 
         body.fill(
-            Rect::new(2 + LABEL_W, row, VALUE_W, 1),
+            Rect::new(layout.value_x(), row, layout.value_w, 1),
             LayerCell::Opaque(Cell { ch: b' ', attr }),
         );
 
@@ -833,7 +860,7 @@ fn draw_cluster<A>(
             (ClusterStyle::Check, true) => b'X',
             _ => b' ',
         };
-        let x = 2 + LABEL_W;
+        let x = layout.value_x();
         body.put(x, row, Cell { ch: open, attr });
         body.put(x + 1, row, Cell { ch: mark, attr });
         body.put(x + 2, row, Cell { ch: close, attr });
@@ -848,7 +875,7 @@ fn draw_cluster<A>(
             &item.label,
             attr,
             None,
-            VALUE_W.saturating_sub(4),
+            layout.value_w.saturating_sub(4),
         );
     }
 }
@@ -972,15 +999,6 @@ mod tests {
     }
 
     #[test]
-    fn the_former_theme_names_still_resolve() {
-        // A 0.1.0 dependant should get a deprecation warning, not a break.
-        #[allow(deprecated)]
-        let _t: FormTheme = Theme::DEFAULT;
-        #[allow(deprecated)]
-        let _h: Option<HotkeyTheme> = Theme::DEFAULT.hotkey;
-    }
-
-    #[test]
     fn a_marked_label_renders_without_its_tildes() {
         let screen = Size::new(80, 25);
         let buf = flatten(render(&marked_form(), screen), screen);
@@ -989,6 +1007,51 @@ mod tests {
             !row_text(&buf, row).contains('~'),
             "markers must never occupy a cell"
         );
+    }
+
+    #[test]
+    fn a_narrow_layout_makes_a_narrower_panel() {
+        let screen = Size::new(80, 25);
+        let narrow = Layout {
+            label_w: 8,
+            value_w: 10,
+        };
+        let width_of = |layout: Layout| {
+            let (layers, _) = render_themed(&form(), screen, Theme::DEFAULT, layout);
+            let buf = flatten(layers, screen);
+            let row = find_row(&buf, "Colour").expect("a field row");
+            let left = (0..buf.cols)
+                .find(|&c| buf.get(c, row).ch == 0xBA)
+                .expect("left border");
+            let right = (left + 1..buf.cols)
+                .find(|&c| buf.get(c, row).ch == 0xBA)
+                .expect("right border");
+            right - left
+        };
+        assert_eq!(width_of(Layout::DEFAULT), Layout::DEFAULT.inner_w() + 1);
+        assert_eq!(width_of(narrow), narrow.inner_w() + 1);
+        assert!(width_of(narrow) < width_of(Layout::DEFAULT));
+    }
+
+    #[test]
+    fn two_default_panels_fit_side_by_side_on_eighty_columns() {
+        // Which is what the default width is chosen for.
+        assert!((Layout::DEFAULT.inner_w() + 2) * 2 <= 80);
+    }
+
+    #[test]
+    fn a_layout_too_narrow_to_draw_a_value_is_widened_rather_than_breaking() {
+        let silly = Layout {
+            label_w: 4,
+            value_w: 0,
+        };
+        // Brackets plus one character is the floor.
+        assert!(silly.text_visible_w() >= 1);
+        assert!(silly.inner_w() > silly.label_w);
+
+        let screen = Size::new(80, 25);
+        // Must not panic or overhang.
+        let _ = render_themed(&form(), screen, Theme::DEFAULT, silly);
     }
 
     #[test]
@@ -1015,7 +1078,7 @@ mod tests {
         assert!(text.contains("[Yes"), "got: {text}");
         // And the label stopped at its own column rather than running into it.
         let open = col_of(&buf, row, b'[');
-        let label_end = col_of(&buf, row, b'A') + LABEL_W;
+        let label_end = col_of(&buf, row, b'A') + Layout::DEFAULT.label_w;
         assert!(open >= label_end, "label ran into the value column: {text}");
     }
 
@@ -1054,7 +1117,7 @@ mod tests {
             ..Theme::DEFAULT
         };
         let f = marked_form();
-        let buf = flatten(render_themed(&f, screen, theme).0, screen);
+        let buf = flatten(render_themed(&f, screen, theme, Layout::DEFAULT).0, screen);
         let row = find_row(&buf, "Sound").expect("still reads as Sound");
         let text = row_text(&buf, row);
         assert!(!text.contains('~'), "markers are stripped either way");
@@ -1096,21 +1159,23 @@ mod tests {
 
     #[test]
     fn a_text_field_shorter_than_its_slot_does_not_scroll() {
-        assert_eq!(text_scroll(0), 0);
-        assert_eq!(text_scroll(TEXT_VISIBLE_W as usize - 1), 0);
+        assert_eq!(text_scroll(0, Layout::DEFAULT), 0);
+        let vis = Layout::DEFAULT.text_visible_w() as usize;
+        assert_eq!(text_scroll(vis - 1, Layout::DEFAULT), 0);
     }
 
     #[test]
     fn a_long_text_field_scrolls_to_keep_the_caret_in_view() {
         // One past the last visible column must scroll by exactly one.
-        assert_eq!(text_scroll(TEXT_VISIBLE_W as usize), 1);
-        assert_eq!(text_scroll(TEXT_VISIBLE_W as usize + 5), 6);
+        let vis = Layout::DEFAULT.text_visible_w() as usize;
+        assert_eq!(text_scroll(vis, Layout::DEFAULT), 1);
+        assert_eq!(text_scroll(vis + 5, Layout::DEFAULT), 6);
     }
 
     #[test]
     fn the_caret_of_a_scrolled_text_field_stays_inside_the_brackets() {
         let screen = Size::new(80, 25);
-        let long = "x".repeat(TEXT_VISIBLE_W as usize + 10);
+        let long = "x".repeat(Layout::DEFAULT.text_visible_w() as usize + 10);
         let caret_at = long.chars().count();
         let f = text_form(&long, caret_at);
         let (_, cursor) = render_with_cursor(&f, screen);

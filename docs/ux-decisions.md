@@ -28,6 +28,8 @@ decided otherwise" should not look alike a year from now.
   - [A caret must contrast against the row it lands on](#a-caret-must-contrast-against-the-row-it-lands-on)
   - [A scrollbar appears only when it means something](#a-scrollbar-appears-only-when-it-means-something)
   - [One char is one cell](#one-char-is-one-cell)
+- [Geometry](#geometry)
+  - [Layout is separate from theme](#layout-is-separate-from-theme)
 - [Undo](#undo)
   - [Cancel restores only what was touched](#cancel-restores-only-what-was-touched)
 
@@ -304,6 +306,30 @@ reason: one char is one column. `Number` got away with byte indices because
 digits are ASCII; `Text` cannot.
 
 ---
+
+## Geometry
+
+### Layout is separate from theme
+
+`Theme` carries attributes; `Layout` carries column widths. `render_themed`
+takes both.
+
+**Why not one type.** They answer different questions — what things look like
+versus how much room they get — and a caller almost always wants to vary one
+without touching the other. A skin should not have to restate the geometry, and
+a narrow panel should not have to restate the colours.
+
+**Why the default is what it is.** 14 + 1 + 22 makes a 39-cell panel, which is
+what lets two sit side by side on an 80-column screen with a column to spare.
+
+**A floor rather than an error.** A layout too narrow to draw `[x]` is widened
+to it rather than rejected. A renderer that panics on bad geometry is worse than
+one that draws something cramped, and a caller computing widths at runtime
+should not have to pre-validate them.
+
+**Consequence.** A label longer than its column is truncated. It used to run on
+under the value beside it and be overwritten mid-word, because `write_str` stops
+at the layer's edge rather than the column's.
 
 ## Undo
 
