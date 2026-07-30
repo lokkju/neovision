@@ -17,11 +17,62 @@ pub enum ButtonKind {
     Cancel,
 }
 
+impl ButtonKind {
+    /// The text drawn inside the button's brackets.
+    pub fn label(self) -> &'static str {
+        match self {
+            ButtonKind::Ok => "OK",
+            ButtonKind::Cancel => "Cancel",
+        }
+    }
+
+    /// The accelerator a built-in button answers to.
+    ///
+    /// Implicit rather than marked, because these two labels are fixed. Field
+    /// kinds whose text the caller chooses declare theirs with `~X~` instead.
+    pub fn mnemonic(self) -> char {
+        match self {
+            ButtonKind::Ok => 'O',
+            ButtonKind::Cancel => 'C',
+        }
+    }
+}
+
 /// One selectable value of a [`FieldKind::Choice`].
 #[derive(Debug, Clone)]
 pub struct ChoiceOption<A> {
     pub label: String,
     pub action: A,
+}
+
+/// Split a label on Turbo Vision's `~X~` mnemonic markers.
+///
+/// Returns the text as it should be drawn (tildes removed) together with the
+/// mnemonic character and its position in that text. `~O~pen` yields
+/// `("Open", Some(('O', 0)))`; a label with no markers yields no mnemonic.
+///
+/// Only the first marked character counts — a label claiming two accelerators
+/// is a mistake, and taking the first is more predictable than taking the last.
+pub fn parse_mnemonic(label: &str) -> (String, Option<(char, usize)>) {
+    let mut text = String::with_capacity(label.len());
+    let mut found: Option<(char, usize)> = None;
+    let mut marked = false;
+    for ch in label.chars() {
+        if ch == '~' {
+            marked = !marked;
+            continue;
+        }
+        if marked && found.is_none() {
+            found = Some((ch, text.chars().count()));
+        }
+        text.push(ch);
+    }
+    (text, found)
+}
+
+/// The character a label claims as its accelerator, if any.
+fn mnemonic_of(label: &str) -> Option<char> {
+    parse_mnemonic(label).1.map(|(c, _)| c)
 }
 
 /// A borrowed view of whatever entry field currently has focus.
@@ -295,6 +346,20 @@ pub enum FormEvent {
     End,
     Delete,
     Insert,
+    /// The user invoked the accelerator for this character.
+    ///
+    /// Deliberately named for intent rather than for a key: a desktop host
+    /// will map Alt+letter onto it, but an embedded keypad or a game reading
+    /// scancodes may have no Alt at all, and is free never to emit this. A
+    /// form whose host stays silent simply has no hotkeys, and everything
+    /// else still works.
+    ///
+    /// Matching is the toolkit's job, not the host's — only the form knows
+    /// which field claimed the character, and only it knows the CUA rule that
+    /// a hotkey on a button presses it while one on any other field focuses
+    /// it. Hosts that cannot offer hotkeys should also clear
+    /// [`FormTheme::hotkey`], so labels stop advertising them.
+    Hotkey(char),
 }
 
 /// What the host should do after an event.
@@ -572,6 +637,7 @@ impl<A: Clone> FormState<A> {
                 self.reselect_focused();
                 FormOutcome::nothing()
             }
+            FormEvent::Hotkey(c) => self.on_hotkey(c),
             FormEvent::Escape => FormOutcome::closing(self.cancel_actions()),
             FormEvent::Enter => self.activate(),
             FormEvent::Char(c) => {
@@ -603,6 +669,43 @@ impl<A: Clone> FormState<A> {
 
     fn focused_kind_mut(&mut self) -> Option<&mut FieldKind<A>> {
         self.fields.get_mut(self.focus).map(|f| &mut f.kind)
+    }
+
+    /// The field claiming `c` as its accelerator, if any.
+    ///
+    /// Case-insensitive, because a host reporting Alt+O has no idea whether
+    /// the label spelled it `O` or `o`. Non-focusable fields are skipped: a
+    /// read-only row cannot take focus, so letting it claim a character would
+    /// silently swallow the accelerator.
+    fn hotkey_target(&self, c: char) -> Option<usize> {
+        let wanted = c.to_ascii_lowercase();
+        self.fields.iter().position(|f| {
+            if !f.focusable() {
+                return false;
+            }
+            let claimed = match &f.kind {
+                FieldKind::Button(kind) => Some(kind.mnemonic()),
+                _ => mnemonic_of(f.label),
+            };
+            claimed.map(|m| m.to_ascii_lowercase()) == Some(wanted)
+        })
+    }
+
+    /// Focus the field claiming `c` — and, if it is a button, press it.
+    ///
+    /// That split is the CUA rule: an accelerator on a button activates it,
+    /// while one on any other control only moves focus there.
+    fn on_hotkey(&mut self, c: char) -> FormOutcome<A> {
+        let Some(target) = self.hotkey_target(c) else {
+            return FormOutcome::nothing();
+        };
+        self.focus = target;
+        self.reselect_focused();
+        if matches!(self.fields[target].kind, FieldKind::Button(_)) {
+            self.activate()
+        } else {
+            FormOutcome::nothing()
+        }
     }
 
     /// Whether focus is on an entry field, where Left/Right move the caret
@@ -869,8 +972,11 @@ impl<A: Clone> FormState<A> {
                 }
             }
             // A popup list is navigated only with Up/Down/Enter/Escape; the
-            // horizontal and Tab movements have no meaning inside it.
-            FormEvent::Char(_)
+            // horizontal and Tab movements have no meaning inside it, and an
+            // accelerator aimed at a field behind the popup must not reach
+            // past it while it is modal.
+            FormEvent::Hotkey(_)
+            | FormEvent::Char(_)
             | FormEvent::Backspace
             | FormEvent::Left
             | FormEvent::Right
@@ -1459,6 +1565,117 @@ mod tests {
     }
 
     /// A form holding one Text field followed by an OK button.
+    #[test]
+    fn parse_mnemonic_strips_markers_and_reports_the_letter() {
+        assert_eq!(parse_mnemonic("~O~pen"), ("Open".into(), Some(('O', 0))));
+        assert_eq!(parse_mnemonic("Sa~v~e"), ("Save".into(), Some(('v', 2))));
+        assert_eq!(parse_mnemonic("Plain"), ("Plain".into(), None));
+    }
+
+    #[test]
+    fn only_the_first_marked_letter_claims_the_accelerator() {
+        // A label claiming two is a mistake; taking the first is predictable.
+        assert_eq!(parse_mnemonic("~A~b~C~"), ("AbC".into(), Some(('A', 0))));
+    }
+
+    #[test]
+    fn a_marker_never_occupies_a_cell() {
+        let (text, _) = parse_mnemonic("~O~pen");
+        assert_eq!(text.chars().count(), 4, "tildes must not be drawn");
+    }
+
+    fn hotkey_form() -> FormState<TestOp> {
+        FormState::new(
+            "T",
+            alloc::vec![
+                Field {
+                    label: "~S~ound",
+                    kind: FieldKind::Toggle {
+                        on: false,
+                        on_action: TestOp::On,
+                        off_action: TestOp::Off,
+                    },
+                    restore: alloc::vec![TestOp::Off],
+                },
+                Field {
+                    label: "Unmarked",
+                    kind: FieldKind::Toggle {
+                        on: false,
+                        on_action: TestOp::On,
+                        off_action: TestOp::Off,
+                    },
+                    restore: alloc::vec![TestOp::Off],
+                },
+                Field {
+                    label: "",
+                    kind: FieldKind::Button(ButtonKind::Ok),
+                    restore: alloc::vec![],
+                },
+                Field {
+                    label: "",
+                    kind: FieldKind::Button(ButtonKind::Cancel),
+                    restore: alloc::vec![],
+                },
+            ],
+        )
+    }
+
+    #[test]
+    fn a_hotkey_moves_focus_to_the_field_that_claimed_it() {
+        let mut f = hotkey_form();
+        f.set_focus(1);
+        let outcome = f.handle(FormEvent::Hotkey('s'));
+        assert_eq!(f.focus(), 0, "focus moved to the ~S~ound field");
+        // Focusing is all it does — a non-button must not be activated.
+        assert!(outcome.actions.is_empty());
+    }
+
+    #[test]
+    fn a_hotkey_matches_regardless_of_case() {
+        let mut f = hotkey_form();
+        f.set_focus(1);
+        f.handle(FormEvent::Hotkey('S'));
+        assert_eq!(f.focus(), 0);
+    }
+
+    #[test]
+    fn a_hotkey_on_a_button_presses_it_rather_than_just_focusing_it() {
+        let mut f = hotkey_form();
+        let outcome = f.handle(FormEvent::Hotkey('o')); // OK
+        assert_eq!(f.focus(), 2);
+        assert!(outcome.close, "OK closes the form");
+    }
+
+    #[test]
+    fn the_cancel_accelerator_closes_and_restores() {
+        let mut f = hotkey_form();
+        let outcome = f.handle(FormEvent::Hotkey('c'));
+        assert_eq!(f.focus(), 3);
+        assert!(outcome.close);
+    }
+
+    #[test]
+    fn an_unclaimed_hotkey_changes_nothing() {
+        let mut f = hotkey_form();
+        f.set_focus(1);
+        let outcome = f.handle(FormEvent::Hotkey('z'));
+        assert_eq!(f.focus(), 1);
+        assert!(outcome.actions.is_empty());
+        assert!(!outcome.close);
+    }
+
+    #[test]
+    fn a_hotkey_does_not_reach_past_an_open_popup() {
+        // The popup is modal; an accelerator aimed at a field behind it must
+        // not fire while it is up.
+        let mut f = form(); // field 0 is a Choice
+        f.handle(FormEvent::Enter); // open the popup
+        assert!(f.popup().is_some());
+        let outcome = f.handle(FormEvent::Hotkey('o'));
+        assert!(f.popup().is_some(), "popup stays open");
+        assert!(!outcome.close, "OK must not have been pressed behind it");
+    }
+
     fn text_form(initial: &str, max_len: usize) -> FormState<TestOp> {
         FormState::new(
             "T",

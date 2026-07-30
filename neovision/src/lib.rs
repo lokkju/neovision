@@ -44,8 +44,8 @@ extern crate alloc;
 pub mod form;
 
 pub use form::{
-    render, render_with_cursor, ButtonKind, ChoiceOption, Field, FieldKind, FormEvent, FormOutcome,
-    FormState, FormTheme, Popup,
+    render, render_themed, render_with_cursor, ButtonKind, ChoiceOption, Field, FieldKind,
+    FormEvent, FormOutcome, FormState, FormTheme, HotkeyTheme, Popup,
 };
 
 /// The character-cell substrate neovision renders onto.

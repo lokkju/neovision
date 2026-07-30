@@ -182,7 +182,14 @@ fn rasterize(screen: &CellBuffer, cursor: Option<TextCursor>, theme: FormTheme) 
 // Input
 // ---------------------------------------------------------------------------
 
-fn to_form_event(key: Key, shift: bool) -> Option<FormEvent> {
+fn to_form_event(key: Key, shift: bool, alt: bool) -> Option<FormEvent> {
+    // Alt+letter is this host's accelerator, and emitting it is optional: a
+    // host with no Alt never sends `Hotkey` and simply has no accelerators.
+    if alt {
+        if let Some(c) = letter_of(key) {
+            return Some(FormEvent::Hotkey(c));
+        }
+    }
     Some(match key {
         Key::Up => FormEvent::Up,
         Key::Down => FormEvent::Down,
@@ -207,6 +214,39 @@ fn to_form_event(key: Key, shift: bool) -> Option<FormEvent> {
         Key::Key7 | Key::NumPad7 => FormEvent::Char('7'),
         Key::Key8 | Key::NumPad8 => FormEvent::Char('8'),
         Key::Key9 | Key::NumPad9 => FormEvent::Char('9'),
+        _ => return None,
+    })
+}
+
+/// The letter a key stands for, for accelerator matching.
+fn letter_of(key: Key) -> Option<char> {
+    Some(match key {
+        Key::A => 'a',
+        Key::B => 'b',
+        Key::C => 'c',
+        Key::D => 'd',
+        Key::E => 'e',
+        Key::F => 'f',
+        Key::G => 'g',
+        Key::H => 'h',
+        Key::I => 'i',
+        Key::J => 'j',
+        Key::K => 'k',
+        Key::L => 'l',
+        Key::M => 'm',
+        Key::N => 'n',
+        Key::O => 'o',
+        Key::P => 'p',
+        Key::Q => 'q',
+        Key::R => 'r',
+        Key::S => 's',
+        Key::T => 't',
+        Key::U => 'u',
+        Key::V => 'v',
+        Key::W => 'w',
+        Key::X => 'x',
+        Key::Y => 'y',
+        Key::Z => 'z',
         _ => return None,
     })
 }
@@ -257,7 +297,7 @@ fn demo_form() -> FormState<Action> {
                 1,
             ),
             Field {
-                label: "Profile",
+                label: "P~r~ofile",
                 kind: FieldKind::Text {
                     buffer: "default".to_string(),
                     cursor: "default".len(),
@@ -269,7 +309,7 @@ fn demo_form() -> FormState<Action> {
                 restore: vec![Action::SetName("default".to_string())],
             },
             Field {
-                label: "Scanlines",
+                label: "Sca~n~lines",
                 kind: FieldKind::Toggle {
                     on: false,
                     on_action: Action::SetScanlines(true),
@@ -278,7 +318,7 @@ fn demo_form() -> FormState<Action> {
                 restore: vec![Action::SetScanlines(false)],
             },
             Field {
-                label: "Frame delay",
+                label: "~F~rame delay",
                 kind: FieldKind::Number {
                     value: 16,
                     buffer: "16".to_string(),
@@ -400,7 +440,7 @@ fn write_gif(path: &str, script: &[FormEvent], delay_cs: u16) -> io::Result<()> 
         let (composed, cursor) = compose(
             state,
             screen,
-            "Tab/arrows to move · Enter to edit · Esc to quit",
+            "Tab/arrows · Enter edits · Alt+letter jumps · Esc quits",
         );
         rasterize(&composed, cursor, FormTheme::DEFAULT)
     };
@@ -585,7 +625,7 @@ fn single_frame(args: &[String]) -> io::Result<()> {
     let (composed, cursor) = compose(
         &state,
         screen,
-        "Tab/arrows to move · Enter to edit · Esc to quit",
+        "Tab/arrows · Enter edits · Alt+letter jumps · Esc quits",
     );
     let frame = rasterize(&composed, cursor, FormTheme::DEFAULT);
     write_ppm(&frame, &path)?;
@@ -622,7 +662,7 @@ fn interactive() -> io::Result<()> {
     while window.is_open() {
         let status = match log.last() {
             Some(a) => format!("last action: {a:?}   ·   Esc or Cancel to quit"),
-            None => "Tab/arrows to move · Enter to edit · Esc to quit".to_string(),
+            None => "Tab/arrows · Enter edits · Alt+letter jumps · Esc quits".to_string(),
         };
 
         let (composed, cursor) = compose(&state, screen, &status);
@@ -632,8 +672,9 @@ fn interactive() -> io::Result<()> {
             .map_err(|e| io::Error::other(format!("could not present a frame: {e}")))?;
 
         let shift = window.is_key_down(Key::LeftShift) || window.is_key_down(Key::RightShift);
+        let alt = window.is_key_down(Key::LeftAlt) || window.is_key_down(Key::RightAlt);
         for key in window.get_keys_pressed(KeyRepeat::Yes) {
-            let Some(ev) = to_form_event(key, shift) else {
+            let Some(ev) = to_form_event(key, shift, alt) else {
                 continue;
             };
             let outcome = state.handle(ev);

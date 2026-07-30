@@ -7,7 +7,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use super::model::{ButtonKind, Field, FieldKind, FormState, Popup};
+use super::model::{parse_mnemonic, Field, FieldKind, FormState, Popup};
 // Only the test module's `use super::*` needs these; the renderer itself
 // never constructs a `ChoiceOption` or feeds a `FormEvent`.
 #[cfg(test)]
@@ -16,6 +16,20 @@ use neovision_core::{
     BoxChars, Cell, CellCanvas, CellDraw, CursorShape, Layer, LayerCell, Point, Rect, Size,
     TextCursor,
 };
+
+/// Attributes for the accelerator letter in a label.
+///
+/// Two of them, because a hotkey has to stay legible on both backgrounds a
+/// label is drawn on, and one attribute cannot. Turbo Vision's palettes made
+/// the same split, carrying separate "shortcut" entries for normal and
+/// selected text.
+#[derive(Debug, Clone, Copy)]
+pub struct HotkeyTheme {
+    /// On an unfocused row, over `normal`.
+    pub normal: u8,
+    /// On the focused row, over `selected`.
+    pub selected: u8,
+}
 
 /// VGA attributes for the form's parts.
 ///
@@ -53,6 +67,15 @@ pub struct FormTheme {
     /// reverse video, and what VGA hardware does, drawing the cursor in the
     /// character's own foreground colour.
     pub cursor: u8,
+    /// How to mark the accelerator letter in a label, or `None` to leave
+    /// labels unmarked.
+    ///
+    /// `None` is for hosts that cannot deliver [`FormEvent::Hotkey`] at all —
+    /// an embedded keypad, a canvas that swallows modifiers. Such a host must
+    /// clear this, or the form underlines letters promising an affordance
+    /// nothing will honour. The `~X~` markers are stripped from labels either
+    /// way, so the text reads correctly regardless.
+    pub hotkey: Option<HotkeyTheme>,
     /// The whole-value selection highlight of a selected Number field. Reverse
     /// of the focused row bar (0x71) so selected digits read as a highlight
     /// block on the inverse row.
@@ -73,6 +96,10 @@ impl FormTheme {
         // caret reads well against the blue panel and then vanishes on the
         // focused row, which is the one place it actually appears.
         cursor: 0x70,
+        hotkey: Some(HotkeyTheme {
+            normal: 0x1E,   // bright yellow on blue, the CUA accelerator colour
+            selected: 0x74, // red on light grey: the same accent, legible on the bar
+        }),
         selection: 0x17, // grey-on-blue: reverse of the 0x71 focused row bar
     };
 }
@@ -102,6 +129,42 @@ const INNER_W: u16 = LABEL_W + 1 + VALUE_W;
 const BUTTON_MIN_INNER: u16 = 6;
 /// Gap between adjacent buttons on a shared row.
 const BUTTON_GAP: u16 = 4;
+
+/// Write a label, stripping `~X~` markers and marking the accelerator.
+///
+/// Returns nothing useful — it is a draw, not a measurement — but note that
+/// the marker characters never occupy a cell, so a label's rendered width is
+/// its text width whether or not it claims an accelerator.
+fn write_label<C: CellDraw + ?Sized>(
+    canvas: &mut C,
+    at: Point,
+    label: &str,
+    attr: u8,
+    hotkey_attr: Option<u8>,
+) {
+    let (text, mnemonic) = parse_mnemonic(label);
+    canvas.write_str(at, &text, attr);
+    if let (Some((_, idx)), Some(hot)) = (mnemonic, hotkey_attr) {
+        // Repaint just the one cell, so the accelerator picks up its own
+        // attribute without the label being drawn twice.
+        let x = at.x.saturating_add(idx as u16);
+        if let Some(ch) = text.chars().nth(idx) {
+            canvas.put(
+                x,
+                at.y,
+                Cell {
+                    ch: cp437_byte(ch),
+                    attr: hot,
+                },
+            );
+        }
+    }
+}
+
+/// One `char` as the CP437 byte a cell holds.
+fn cp437_byte(ch: char) -> u8 {
+    neovision_core::cp437::from_char(ch).unwrap_or(b'?')
+}
 
 /// Truncate-or-pad `s` to exactly `width` chars.
 ///
@@ -217,8 +280,7 @@ fn value_text<A>(field: &Field<A>) -> alloc::string::String {
         FieldKind::Text { buffer, .. } => buffer.clone(),
         FieldKind::Toggle { on, .. } => if *on { "Yes" } else { "No" }.to_string(),
         FieldKind::ReadOnly(s) => s.clone(),
-        FieldKind::Button(ButtonKind::Ok) => "OK".to_string(),
-        FieldKind::Button(ButtonKind::Cancel) => "Cancel".to_string(),
+        FieldKind::Button(kind) => kind.label().to_string(),
     }
 }
 
@@ -275,8 +337,11 @@ fn button_run_start<A>(fields: &[Field<A>]) -> usize {
 /// so the layout math (panel origin, per-row field position) is computed
 /// exactly once rather than duplicated between a layers-only and a
 /// layers-plus-cursor entry point.
-fn render_impl<A>(state: &FormState<A>, screen: Size) -> (Vec<Layer>, Option<TextCursor>) {
-    let theme = FormTheme::DEFAULT;
+fn render_impl<A>(
+    state: &FormState<A>,
+    screen: Size,
+    theme: FormTheme,
+) -> (Vec<Layer>, Option<TextCursor>) {
     let mut layers = Vec::new();
     let mut text_cursor: Option<TextCursor> = None;
 
@@ -336,7 +401,15 @@ fn render_impl<A>(state: &FormState<A>, screen: Size) -> (Vec<Layer>, Option<Tex
                 attr: label_attr,
             }),
         );
-        body.write_str(Point::new(2, row), field.label, label_attr);
+        write_label(
+            &mut body,
+            Point::new(2, row),
+            field.label,
+            label_attr,
+            theme
+                .hotkey
+                .map(|h| if focused { h.selected } else { h.normal }),
+        );
         body.write_str(
             Point::new(2 + LABEL_W, row),
             &value_column(field, focused),
@@ -473,6 +546,32 @@ fn render_impl<A>(state: &FormState<A>, screen: Size) -> (Vec<Layer>, Option<Tex
                 theme.normal
             };
             body.write_str(Point::new(x, btn_row), chrome, attr);
+
+            // A built-in button's accelerator is implicit rather than marked,
+            // so find its letter in the chrome that was just drawn. Bracket
+            // and padding cells are never letters, so the first match is the
+            // label's own.
+            if let (Some(hot), Some(FieldKind::Button(kind))) =
+                (theme.hotkey, fields.get(*idx).map(|f| &f.kind))
+            {
+                let wanted = kind.mnemonic();
+                if let Some(offset) = chrome.chars().position(|c| c == wanted) {
+                    let hot_attr = if *idx == state.focus() {
+                        hot.selected
+                    } else {
+                        hot.normal
+                    };
+                    body.put(
+                        x.saturating_add(offset as u16),
+                        btn_row,
+                        Cell {
+                            ch: cp437_byte(wanted),
+                            attr: hot_attr,
+                        },
+                    );
+                }
+            }
+
             x = x.saturating_add(chrome.chars().count() as u16 + gap);
         }
     }
@@ -488,7 +587,7 @@ fn render_impl<A>(state: &FormState<A>, screen: Size) -> (Vec<Layer>, Option<Tex
 
 /// Draw `state` into layers, bottom-to-top.
 pub fn render<A>(state: &FormState<A>, screen: Size) -> Vec<Layer> {
-    render_impl(state, screen).0
+    render_impl(state, screen, FormTheme::DEFAULT).0
 }
 
 /// As `render`, but also returns the text-cursor descriptor for the
@@ -501,7 +600,22 @@ pub fn render_with_cursor<A>(
     state: &FormState<A>,
     screen: Size,
 ) -> (Vec<Layer>, Option<TextCursor>) {
-    render_impl(state, screen)
+    render_impl(state, screen, FormTheme::DEFAULT)
+}
+
+/// As [`render_with_cursor`], but drawn with the caller's own [`FormTheme`].
+///
+/// This is what makes `FormTheme` more than documentation: a host with its own
+/// skin varies the attributes here rather than reaching into the renderer. It
+/// is also the only way to clear [`FormTheme::hotkey`], which a host that
+/// cannot deliver `FormEvent::Hotkey` should do, so that labels stop
+/// advertising accelerators nothing will honour.
+pub fn render_themed<A>(
+    state: &FormState<A>,
+    screen: Size,
+    theme: FormTheme,
+) -> (Vec<Layer>, Option<TextCursor>) {
+    render_impl(state, screen, theme)
 }
 
 fn push_popup<A>(
@@ -572,6 +686,9 @@ fn push_popup<A>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The renderer itself reaches button text through `ButtonKind::label()`,
+    // so only the tests still name the enum.
+    use super::super::model::ButtonKind;
     use alloc::string::ToString;
     use neovision_core::{CellBuffer, LayerStack};
 
@@ -583,6 +700,81 @@ mod tests {
 
     /// OK and Cancel both present (not just OK) so the layout tests exercise
     /// the actual side-by-side button row, not a degenerate one-button case.
+    fn marked_form() -> FormState<TestOp> {
+        FormState::new(
+            "T",
+            alloc::vec![
+                Field {
+                    label: "~S~ound",
+                    kind: FieldKind::Toggle {
+                        on: true,
+                        on_action: TestOp::A,
+                        off_action: TestOp::B,
+                    },
+                    restore: alloc::vec![],
+                },
+                Field {
+                    label: "",
+                    kind: FieldKind::Button(ButtonKind::Ok),
+                    restore: alloc::vec![],
+                },
+            ],
+        )
+    }
+
+    #[test]
+    fn a_marked_label_renders_without_its_tildes() {
+        let screen = Size::new(80, 25);
+        let buf = flatten(render(&marked_form(), screen), screen);
+        let row = find_row(&buf, "Sound").expect("the label reads as Sound");
+        assert!(
+            !row_text(&buf, row).contains('~'),
+            "markers must never occupy a cell"
+        );
+    }
+
+    #[test]
+    fn the_accelerator_letter_carries_its_own_attribute() {
+        let screen = Size::new(80, 25);
+        let f = marked_form();
+        let buf = flatten(render(&f, screen), screen);
+        let row = find_row(&buf, "Sound").expect("sound row");
+        let s_at = col_of(&buf, row, b'S');
+        let hot = FormTheme::DEFAULT.hotkey.expect("default marks hotkeys");
+        // Field 0 is focused, so the accelerator uses the selected variant.
+        assert_eq!(buf.get(s_at, row).attr, hot.selected);
+        // ...and the letter beside it does not.
+        assert_ne!(buf.get(s_at + 1, row).attr, hot.selected);
+    }
+
+    #[test]
+    fn a_button_marks_its_implicit_accelerator() {
+        let screen = Size::new(80, 25);
+        let buf = flatten(render(&marked_form(), screen), screen);
+        let row = find_row(&buf, "OK").expect("button row");
+        let o_at = col_of(&buf, row, b'O');
+        let hot = FormTheme::DEFAULT.hotkey.expect("default marks hotkeys");
+        // The OK button is not focused here, so it takes the normal variant.
+        assert_eq!(buf.get(o_at, row).attr, hot.normal);
+    }
+
+    #[test]
+    fn clearing_the_hotkey_theme_leaves_labels_unmarked_but_still_readable() {
+        let screen = Size::new(80, 25);
+        let theme = FormTheme {
+            hotkey: None,
+            ..FormTheme::DEFAULT
+        };
+        let f = marked_form();
+        let buf = flatten(render_themed(&f, screen, theme).0, screen);
+        let row = find_row(&buf, "Sound").expect("still reads as Sound");
+        let text = row_text(&buf, row);
+        assert!(!text.contains('~'), "markers are stripped either way");
+        let s_at = col_of(&buf, row, b'S');
+        // Every cell of the label shares one attribute: nothing is promised.
+        assert_eq!(buf.get(s_at, row).attr, buf.get(s_at + 1, row).attr);
+    }
+
     fn text_form(initial: &str, cursor: usize) -> FormState<TestOp> {
         FormState::new(
             "T",
@@ -638,9 +830,8 @@ mod tests {
 
         let buf = flatten(render(&f, screen), screen);
         let row = find_row(&buf, "Name").expect("name row");
-        let text = row_text(&buf, row);
-        let open = text.find('[').expect("opening bracket") as u16;
-        let close = text.find(']').expect("closing bracket") as u16;
+        let open = col_of(&buf, row, b'[');
+        let close = col_of(&buf, row, b']');
         assert!(
             c.col > open && c.col <= close,
             "caret at {} escaped the brackets at {}..{}",
@@ -717,6 +908,18 @@ mod tests {
         let mut out = CellBuffer::new(screen.w, screen.h);
         stack.composite(&base, &mut out);
         out
+    }
+
+    /// Column of the first cell in `row` holding `ch`.
+    ///
+    /// Scans cells rather than searching `row_text`. A rendered row contains
+    /// CP437 bytes above 0x7F — the panel border, for one — which widen to
+    /// multi-byte chars in a `String`, so a byte offset from `str::find` is
+    /// not a column.
+    fn col_of(buf: &CellBuffer, row: u16, ch: u8) -> u16 {
+        (0..buf.cols)
+            .find(|&c| buf.get(c, row).ch == ch)
+            .unwrap_or_else(|| panic!("no {:?} in row {row}", ch as char))
     }
 
     fn row_text(buf: &CellBuffer, row: u16) -> alloc::string::String {
