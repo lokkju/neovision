@@ -26,16 +26,22 @@ tradition it descends from.
 ```
 neovision-core   Substrate. Cell / CellBuffer, Layer / LayerStack + compositor,
                  TextCursor / CursorShape, BoxChars, CellDraw, the CP437 table,
-                 geom (Point/Rect/Size). Zero dependencies.
+                 the VGA 8x16 and 8x8 faces behind a `font` feature, geom
+                 (Point/Rect/Size). Zero dependencies.
         ▲
 neovision        The CUA widget toolkit. FormState / Field / FieldKind
-                 (Choice/Number/Toggle/ReadOnly/Button), the entry-field editing
-                 state machine, the CUA renderer (render / render_with_cursor →
-                 Layers + TextCursor), FormTheme, FormEvent / FormOutcome.
-                 Re-exports neovision-core, so `cargo add neovision` yields
-                 widgets + primitives.
+                 (Choice/Text/Number/Toggle/Cluster/ReadOnly/Button), one edit
+                 state machine shared by the entry kinds, the CUA renderer
+                 (render / render_with_cursor / render_themed → Layers +
+                 TextCursor), Theme + HotkeyAttrs, Layout, EnterReach,
+                 ButtonRole, FormEvent / FormOutcome. Re-exports
+                 neovision-core, so `cargo add neovision` yields widgets +
+                 primitives.
 
-examples/        Hosts. Living documentation, never published as a library.
+examples/        Three hosts. Living documentation, never published.
+                 terminal.rs      cells → crossterm
+                 framebuffer.rs   cells → pixels, and the README's animation
+                 embedded.rs      cells → embedded-graphics DrawTarget
 ```
 
 ### Why there is no third "controller" crate
@@ -135,7 +141,7 @@ exactly one cell, which is what lets callers reason about column alignment.
 The extraction is mechanically safe because the suite came with it. Every claim
 below is checked in CI on each push:
 
-- 226 tests (unit + doctests)
+- Over 230 tests (unit + doctests)
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `cargo doc --workspace --no-deps` with `RUSTDOCFLAGS=-D warnings`
 - MSRV build against the 1.76 toolchain

@@ -233,7 +233,7 @@ actually touched.
 
 ## Status
 
-1.0, and the API is what it commits to. 235 tests cover the widgets, the
+1.0, and the API is what it commits to. Over 230 tests cover the widgets, the
 renderer and the compositor; CI additionally checks clippy and rustdoc at
 `-D warnings`, the MSRV of **1.76** against that toolchain, a bare-metal
 `thumbv7em-none-eabihf` build, and a real rendered frame from each of the three
