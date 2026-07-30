@@ -14,8 +14,8 @@
 //! Run it:
 //!
 //! ```console
-//! cargo run --example framebuffer --features font              # a window
-//! cargo run --example framebuffer --features font -- --single  # one PPM frame
+//! cargo run --example framebuffer              # a window
+//! cargo run --example framebuffer -- --single  # one PPM frame
 //! ```
 //!
 //! `--single` writes a frame and exits, needing no display at all, so the

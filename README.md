@@ -43,8 +43,8 @@ Try it:
 cargo run --example terminal            # drive it in your terminal
 cargo run --example terminal -- --dump  # render one frame as text, no TTY
 
-cargo run --example framebuffer --features font              # a pixel window
-cargo run --example framebuffer --features font -- --single  # write one PPM
+cargo run --example framebuffer              # a pixel window
+cargo run --example framebuffer -- --single  # write one PPM
 ```
 
 ## The crates
@@ -54,9 +54,11 @@ cargo run --example framebuffer --features font -- --single  # write one PPM
 | [`neovision`](https://docs.rs/neovision) | The widget toolkit: forms, fields, the CUA renderer. Re-exports `neovision-core`. |
 | [`neovision-core`](https://docs.rs/neovision-core) | The substrate: cells, layers, the compositor, CP437, geometry. Zero dependencies. |
 
-`neovision-core` also bundles the IBM VGA 8x16 face behind a `font` feature,
-off by default. Only hosts that rasterize pixels need it, and 4 KiB of glyph
-data is not free on the bare-metal targets `no_std` is there to reach.
+`neovision` bundles the IBM VGA 8x16 face by default, so a pixel host can draw
+without hunting for a font. It comes from `neovision-core`'s `font` feature,
+which is off *there* by default — the substrate stays minimal for anyone
+counting bytes. A build that cannot spare the 4 KiB takes
+`neovision = { version = "0.1", default-features = false }`.
 
 `cargo add neovision` gets you both — the widgets and the primitives they draw
 on. Reach for `neovision-core` alone only if you want the cell grid without any

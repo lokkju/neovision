@@ -16,7 +16,12 @@ rust-version.workspace = true
 crate-type = ["rlib"]
 
 [features]
-default = []
+# On by default here, off by default in neovision-core. This crate is the
+# batteries-included one — `cargo add neovision` should just be able to draw —
+# while the substrate stays minimal for anyone counting bytes. A build that
+# genuinely cannot spare the 4 KiB takes `default-features = false`, or depends
+# on neovision-core directly.
+default = ["font"]
 # Re-exports the bundled VGA face from neovision-core, for pixel hosts.
 font = ["neovision-core/font"]
 
@@ -41,4 +46,6 @@ path = "examples/terminal.rs"
 [[example]]
 name = "framebuffer"
 path = "examples/framebuffer.rs"
+# Satisfied by the default feature set, so this documents the dependency
+# without making anyone pass a flag to run it.
 required-features = ["font"]
