@@ -4,6 +4,14 @@ All notable changes are recorded here. This file is generated from
 conventional commits by [git-cliff](https://git-cliff.org) via
 [release-plz](https://release-plz.dev).
 
+## [1.0.1] - 2026-07-30
+
+### Documentation
+
+- Correct the stale parts of the spec, and stop quoting exact counts
+- Correct the README for 1.0, and make its examples doctests
+
+
 ## [1.0.0] - 2026-07-30
 
 ### Bug Fixes
