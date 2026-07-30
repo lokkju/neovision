@@ -33,6 +33,9 @@ Try it:
 ```console
 cargo run --example terminal            # drive it in your terminal
 cargo run --example terminal -- --dump  # render one frame as text, no TTY
+
+cargo run --example framebuffer --features font              # a pixel window
+cargo run --example framebuffer --features font -- --single  # write one PPM
 ```
 
 ## The crates
@@ -42,17 +45,27 @@ cargo run --example terminal -- --dump  # render one frame as text, no TTY
 | [`neovision`](https://docs.rs/neovision) | The widget toolkit: forms, fields, the CUA renderer. Re-exports `neovision-core`. |
 | [`neovision-core`](https://docs.rs/neovision-core) | The substrate: cells, layers, the compositor, CP437, geometry. Zero dependencies. |
 
+`neovision-core` also bundles the IBM VGA 8x16 face behind a `font` feature,
+off by default. Only hosts that rasterize pixels need it, and 4 KiB of glyph
+data is not free on the bare-metal targets `no_std` is there to reach.
+
 `cargo add neovision` gets you both — the widgets and the primitives they draw
 on. Reach for `neovision-core` alone only if you want the cell grid without any
 opinion about widgets.
 
 ## Writing a host
 
-A host owes the toolkit three things, and nothing else. `examples/terminal.rs`
-is a complete one in about 250 lines, most of it comments.
+A host owes the toolkit three things, and nothing else. There are two complete
+ones to read: `examples/terminal.rs` hands cells to a terminal, and
+`examples/framebuffer.rs` rasterizes every pixel itself the way a canvas, an
+embedded display, or a real VESA mode would. Both are mostly comments.
+
+Each has a headless mode that renders without a display — `--dump` for the
+terminal host, `--single` for the framebuffer one — so what they draw is
+checked in CI rather than only by eye.
 
 **Glyphs.** A cell's `ch` is a CP437 byte. `cp437::to_char` turns it into a
-`char`; a framebuffer host would index a font atlas with the byte directly.
+`char` for a terminal; a pixel host calls `font::glyph` and walks the bits.
 
 **Colour.** A cell's `attr` is a VGA attribute byte: `fg()` gives 16 foreground
 colours, `bg()` gives 8 background colours, `blink()` gives bit 7.
@@ -97,7 +110,7 @@ actually touched.
 ## Status
 
 Pre-1.0 and honest about it. The form widgets, the renderer, and the compositor
-are covered by 146 tests. The API will still move.
+are covered by 153 tests. The API will still move.
 
 Deliberately **not** implemented yet: Turbo Vision's `TGroup` / `TApplication`
 layer — a view tree, a desktop, stacked modal dialogs, z-ordered windows with

@@ -167,32 +167,54 @@ it: the group/app layer composes the existing `Layer` stack and `FormState`s.
 **Trigger condition:** do not build it speculatively. Add it when a real
 consumer needs stacked modals or a desktop metaphor. YAGNI until then.
 
+## Resolved
+
+### The framebuffer host, and the font
+
+Built as `examples/framebuffer.rs`. The bundled face lives in
+`neovision-core::font` behind a default-off `font` feature: 256 glyphs of 16
+rows, one byte per row, most significant bit leftmost — the layout of the VGA
+font ROM, so a row byte blits by walking its bits. Feature-gated rather than
+unconditional because only pixel hosts need it and 4 KiB is not free on a
+microcontroller; in `neovision-core` rather than in the example because every
+pixel host needs it, and leaving it in one example guarantees it gets copied
+into the next.
+
+The bytes are a dump of an IBM VGA BIOS ROM character generator. Typeface
+*designs* are not copyrightable subject matter in the United States
+(37 CFR 202.1(e)) and a bitmap face is data rather than a program, which is why
+such dumps circulate freely; scalable font *programs* are a different matter and
+none are involved. A host wanting its own face declares its own
+`[[u8; 16]; 256]` — nothing in the table is privileged.
+
+`--single` renders one frame to a PPM with no display attached, so the
+rasterizer is checked in CI rather than only by eye, and `--keys` drives the
+form first so states a human would have to tab into — an edit caret, an open
+popup — stay reachable headlessly.
+
+### `FormTheme.cursor` — kept, and its default corrected
+
+Writing the pixel host settled it, exactly as intended. The field is real: a
+pixel host is the first thing that has to decide what colour a caret is, since
+`TextCursor` deliberately carries position and shape but not colour.
+
+Building it also exposed a genuine bug in the default. `FormTheme::DEFAULT`
+had `cursor: 0x1F`, bright white — a sensible choice against the blue panel,
+and the wrong one, because a caret only ever appears on the **focused row**,
+which is painted in `selected` (`0x71`, a light-grey background). White on light
+grey is about 1.6:1; the caret was very nearly invisible. The default is now
+`0x70`, a black caret, which contrasts against the row it actually lands on.
+
+The field's documentation now states that its foreground nibble is the caret
+colour and that it must contrast against `selected` rather than `normal` — the
+assumption that caused the bug.
+
+The two shapes resolve colour differently, and both are correct:
+`CursorShape::Overtype` is documented as reverse video and so needs nothing
+external — swapping the cell's own two colours is the whole of it, matching what
+VGA hardware does. `CursorShape::Insert` has no such rule, so it reads the
+theme.
+
 ## Open items
 
-- **Framebuffer host.** A second example rasterising to pixels rather than a
-  terminal. Needs a baked-in CP437 8x16 bitmap (256 glyphs × 16 bytes = 4 KB of
-  `const` data — no font package or crate dependency), plus a hook letting a
-  host substitute its own atlas. The open question is provenance of those bytes,
-  not packaging: typeface *designs* are not copyrightable in the US and raw
-  bitmaps are treated as data, but the conveniently packaged sources are often
-  CC BY-SA, which has no place in an MIT repository.
-- **`FormTheme.cursor`.** Nothing reads it yet, but that does not make it dead.
-  `FormTheme` exists as separate attribute bytes precisely so a themed pixel
-  renderer can vary them per skin, and `cursor` is the caret colour for that
-  renderer.
-
-  `TextCursor` superseded the *mechanism* — the caret used to be drawn straight
-  into the cell buffer, and is now reported out-of-band as `{col, row, shape}`
-  for the host to draw. It did not supersede the *colour*, which is the one
-  thing `FormTheme.cursor` still supplies.
-
-  Whether that knob is wanted at all is genuinely open. Both shapes already
-  imply where their colour comes from — `Overtype` is documented as reverse
-  video, and real VGA hardware draws the cursor in the character's own
-  foreground colour, with no separate colour register. A faithful renderer may
-  therefore never read the field.
-
-  **Resolve it when the framebuffer host is written**, not before: that host is
-  the only thing that will show whether a skin wants to override the caret
-  colour or simply invert. Pre-1.0 keeps removal cheap either way, and the cost
-  of holding it is one unused `u8`.
+_None currently tracked._

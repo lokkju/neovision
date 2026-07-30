@@ -20,6 +20,8 @@ pub mod cell;
 pub mod cp437;
 pub mod cursor;
 pub mod draw;
+#[cfg(feature = "font")]
+pub mod font;
 pub mod geom;
 pub mod layer;
 

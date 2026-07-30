@@ -15,12 +15,26 @@ rust-version.workspace = true
 [lib]
 crate-type = ["rlib"]
 
+[features]
+default = []
+# Re-exports the bundled VGA face from neovision-core, for pixel hosts.
+font = ["neovision-core/font"]
+
 [dependencies]
 neovision-core = { workspace = true }
 
 [dev-dependencies]
 crossterm = "0.28"
+minifb = "0.28"
+
+[package.metadata.docs.rs]
+all-features = true
 
 [[example]]
 name = "terminal"
 path = "examples/terminal.rs"
+
+[[example]]
+name = "framebuffer"
+path = "examples/framebuffer.rs"
+required-features = ["font"]
