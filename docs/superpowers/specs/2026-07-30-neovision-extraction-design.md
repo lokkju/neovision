@@ -161,6 +161,11 @@ consumer needs stacked modals or a desktop metaphor. YAGNI until then.
   not packaging: typeface *designs* are not copyrightable in the US and raw
   bitmaps are treated as data, but the conveniently packaged sources are often
   CC BY-SA, which has no place in an MIT repository.
-- **`FormTheme.cursor`.** A public field nothing reads — verified against both
-  this repository and the originating one. It is a candidate for removal while
-  removal is still free.
+## Resolved
+
+- **`FormTheme.cursor`** — removed before 0.1.0. It was a public field nothing
+  read, verified against both this repository and the one the crates came from.
+  The caret travels out-of-band as a `TextCursor`, so no theme attribute was
+  needed for it. A host that later wants an attribute-based caret can have the
+  field back cheaply; carrying it unused into a published API could not be
+  undone as cheaply.
