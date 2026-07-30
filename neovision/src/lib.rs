@@ -56,3 +56,18 @@ pub use neovision_core::{
     BoxChars, Cell, CellBuffer, CellCanvas, CellDraw, CursorShape, Layer, LayerCell, LayerStack,
     Point, Rect, Size, TextCursor, SHADE_ATTR,
 };
+
+/// Compiles every Rust block in the README as a doctest.
+///
+/// `cfg(doctest)` keeps it out of the rendered documentation — the crate has
+/// its own front page above, and the README is a different document for a
+/// different reader. This exists only so that the examples in it cannot go
+/// stale without CI noticing.
+///
+/// The path is `../README.md` rather than `../../README.md` because
+/// `neovision/README.md` is a symlink to the workspace one: cargo copies the
+/// readme to the *package* root when publishing, so only the symlinked path
+/// resolves both here and in the published crate.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;

@@ -111,7 +111,7 @@ a render test.
 |---|---|---|
 | License | MIT | Simplest permissive licence; GPLv2-compatible. Patent exposure for a cell renderer is nil, so the Apache-2.0 dual form bought nothing here. |
 | Visibility | Public | Required for crates.io, docs.rs, and OIDC publishing. |
-| Version | 0.1.0 | Fresh crate. Inheriting a version number from an unrelated project would misrepresent its history. |
+| Version | 0.1.0, then 1.0.0 | Started fresh rather than inheriting a version from an unrelated project. 1.0.0 was cut once the parity pass settled the API; release-plz computes 0.2.0 from a 0.x manifest, since a breaking change bumps the minor below 1.0, so the major was set by hand. |
 | Release tooling | release-plz | Conventional commits drive the bump, changelog (via git-cliff), tag, and crates.io publish. Both crates share a `version_group` so they move in lockstep. |
 | cargo-dist | Rejected | It ships prebuilt binaries. These are library crates; the demo is `cargo run --example`. Nobody needs a prebuilt copy of it. |
 | MSRV | 1.76 | Verified against that toolchain in CI, not merely declared. `core::iter::repeat_n` was replaced with `repeat().take()` rather than let one convenience raise the floor to 1.82. |

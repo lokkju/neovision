@@ -23,7 +23,7 @@ index.
 
 The same form through the `terminal` host, as `--dump` prints it:
 
-```
+```text
 ░░░░░░░░░░░░░░░░░░░░╔════════  Display Settings  ═════════╗░░░░░░░░░░░░░░░░░░░░░
 ░░░░░░░░░░░░░░░░░░░░║ Theme         [Classic             ]║░░░░░░░░░░░░░░░░░░░░░
 ░░░░░░░░░░░░░░░░░░░░║ Scale         [2x                  ]║░░░░░░░░░░░░░░░░░░░░░
@@ -67,11 +67,100 @@ cargo run --example embedded -- --single     # write one PPM
 without hunting for a font. It comes from `neovision-core`'s `font` feature,
 which is off *there* by default — the substrate stays minimal for anyone
 counting bytes. A build that cannot spare the 4 KiB takes
-`neovision = { version = "0.1", default-features = false }`.
+`neovision = { version = "1", default-features = false }`.
 
 `cargo add neovision` gets you both — the widgets and the primitives they draw
 on. Reach for `neovision-core` alone only if you want the cell grid without any
 opinion about widgets.
+
+## Building a form
+
+A form is a title and a list of fields, generic over your own action type.
+
+```rust
+use neovision::{
+    ChoiceOption, ClusterItem, ClusterStyle, EnterReach, Field, FieldKind, FormState,
+};
+
+#[derive(Clone)]
+enum Action {
+    SetTheme(&'static str),
+    SetName(String),
+    SetDelay(u32),
+}
+
+fn settings() -> FormState<Action> {
+    FormState::new(
+        " Settings ",
+        vec![
+            // A dropdown. Enter opens it; the popup scrolls if it has to.
+            Field {
+                label: "Theme",
+                kind: FieldKind::Choice {
+                    options: vec![
+                        ChoiceOption { label: "Classic".into(), action: Action::SetTheme("classic") },
+                        ChoiceOption { label: "Amber".into(),   action: Action::SetTheme("amber") },
+                    ],
+                    selected: Some(0),
+                },
+                // What Cancel replays if the user changed this field.
+                restore: vec![Action::SetTheme("classic")],
+            },
+            // Free text, with the whole value selected on entry.
+            Field {
+                label: "Name",
+                kind: FieldKind::Text {
+                    buffer: "default".into(),
+                    cursor: 7,
+                    selected: true,
+                    overtype: false,
+                    max_len: 32,
+                    commit: |s| Action::SetName(s.to_string()),
+                },
+                restore: vec![Action::SetName("default".into())],
+            },
+            // A radio cluster: arrows move the caret, Space chooses.
+            Field {
+                label: "Video",
+                kind: FieldKind::Cluster {
+                    style: ClusterStyle::Radio,
+                    items: vec![
+                        ClusterItem { label: "CGA".into(), on: true,  on_action: Action::SetTheme("cga"), off_action: None },
+                        ClusterItem { label: "EGA".into(), on: false, on_action: Action::SetTheme("ega"), off_action: None },
+                    ],
+                    cursor: 0,
+                },
+                restore: vec![Action::SetTheme("cga")],
+            },
+            // Bounded integer entry.
+            Field {
+                label: "Delay",
+                kind: FieldKind::Number {
+                    value: 250,
+                    buffer: "250".into(),
+                    cursor: 3,
+                    selected: true,
+                    overtype: false,
+                    min: 0,
+                    max: 9999,
+                    unit: "ms",
+                    commit: Action::SetDelay,
+                },
+                restore: vec![Action::SetDelay(250)],
+            },
+            Field::ok(),     // default button: `«  OK  »`, Alt+O
+            Field::cancel(), // Alt+C, and what Escape does
+        ],
+    )
+    // Enter finishes the form. The library default is `OperateOnly`, where
+    // Enter only ever operates the focused control.
+    .with_enter_reach(EnterReach::AcceptWhenIdle)
+}
+```
+
+The remaining kinds are `Toggle`, `ReadOnly`, and `Cluster` with
+`ClusterStyle::Check`. `Theme` varies the attributes and `Layout` the column
+widths; `render_themed` takes both.
 
 ## Writing a host
 
@@ -87,11 +176,13 @@ complete ones to read:
 All three are mostly comments.
 
 Each has a headless mode that renders without a display — `--dump` for the
-terminal host, `--single` for the framebuffer one — so what they draw is
-checked in CI rather than only by eye.
+terminal host, `--single` for the other two — so what they draw is checked in
+CI rather than only by eye. All three also take `--keys tab,tab,down,space`, to
+reach a state without driving it by hand.
 
 **Glyphs.** A cell's `ch` is a CP437 byte. `cp437::to_char` turns it into a
-`char` for a terminal; a pixel host calls `font::glyph` and walks the bits.
+`char` for a terminal; a pixel host calls `font::glyph` (8x16) or
+`font::glyph_8x8` and walks the bits.
 
 **Colour.** A cell's `attr` is a VGA attribute byte: `fg()` gives 16 foreground
 colours, `bg()` gives 8 background colours, `blink()` gives bit 7.
@@ -142,13 +233,24 @@ actually touched.
 
 ## Status
 
-Pre-1.0 and honest about it. The form widgets, the renderer, and the compositor
-are covered by 235 tests. The API will still move.
+1.0, and the API is what it commits to. 235 tests cover the widgets, the
+renderer and the compositor; CI additionally checks clippy and rustdoc at
+`-D warnings`, the MSRV of **1.76** against that toolchain, a bare-metal
+`thumbv7em-none-eabihf` build, and a real rendered frame from each of the three
+hosts.
 
-Deliberately **not** implemented yet: Turbo Vision's `TGroup` / `TApplication`
-layer — a view tree, a desktop, stacked modal dialogs, z-ordered windows with
-focus chains. neovision models one modal overlay at a time. That layer will get
-built when something real needs it, not before.
+Deliberately **not** implemented, and each waiting on a real consumer rather
+than a schedule:
+
+- **`TGroup` / `TApplication`** — a view tree, a desktop, stacked modal dialogs,
+  z-ordered windows with focus chains. neovision models one modal overlay at a
+  time. Placing two forms side by side does *not* need this; it needs a
+  placement parameter, which is planned.
+- **Validators** — Turbo Vision's range, picture, filter and lookup family.
+  `Number` clamps to `min`/`max` and nothing else validates.
+- **`TMemo`** — multi-line text. The edit state machine is single-line
+  throughout, so this is a new field kind rather than a flag on `Text`.
+- **`THistory`** — a dropdown of previously entered values on an input line.
 
 ## License
 
