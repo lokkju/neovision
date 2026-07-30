@@ -44,8 +44,8 @@ extern crate alloc;
 pub mod form;
 
 pub use form::{
-    render, render_themed, render_with_cursor, ButtonRole, ChoiceOption, Field, FieldKind,
-    FormEvent, FormOutcome, FormState, HotkeyAttrs, Popup, Theme,
+    render, render_themed, render_with_cursor, ButtonRole, ChoiceOption, EnterReach, Field,
+    FieldKind, FormEvent, FormOutcome, FormState, HotkeyAttrs, Popup, Theme,
 };
 
 /// Former names, kept so a 0.1.0 dependant gets a warning rather than a break.

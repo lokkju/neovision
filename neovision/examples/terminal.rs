@@ -35,8 +35,8 @@ use crossterm::{
 
 use neovision::neovision_core::cp437;
 use neovision::{
-    render_with_cursor, Cell, CellBuffer, CellDraw, ChoiceOption, CursorShape, Field, FieldKind,
-    FormEvent, FormState, LayerStack, Point, Size, TextCursor, Theme,
+    render_with_cursor, Cell, CellBuffer, CellDraw, ChoiceOption, CursorShape, EnterReach, Field,
+    FieldKind, FormEvent, FormState, LayerStack, Point, Size, TextCursor, Theme,
 };
 
 /// What this demo's form can ask for.
@@ -233,6 +233,8 @@ fn choice(label: &'static str, options: &[(&str, Action)], selected: usize) -> F
 }
 
 fn demo_form() -> FormState<Action> {
+    // A dialog, so Enter finishes it. The library defaults to OperateOnly,
+    // where Enter only ever operates the focused control.
     FormState::new(
         " Display Settings ",
         vec![
@@ -299,6 +301,7 @@ fn demo_form() -> FormState<Action> {
             Field::cancel(),
         ],
     )
+    .with_enter_reach(EnterReach::AcceptWhenIdle)
 }
 
 /// The desktop the dialog floats over, plus the two chrome bars.

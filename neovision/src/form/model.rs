@@ -10,6 +10,34 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
+/// How far Enter reaches.
+///
+/// Three traditions disagree about this, and all three are coherent, so the
+/// form is told which one it belongs to rather than the toolkit picking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EnterReach {
+    /// Enter only ever operates the focused control. Accepting the form means
+    /// focusing a button and pressing it.
+    ///
+    /// The BIOS-setup habit: Enter opens a setting's value list, and you leave
+    /// the screen with an explicit key. The default, because it is the
+    /// conservative reading — a form that does not expect Enter to close it
+    /// never will.
+    #[default]
+    OperateOnly,
+    /// Enter operates a control that has something to operate, and otherwise
+    /// commits the entry field and presses the default button.
+    ///
+    /// The middle reading: typing a value and pressing Enter finishes the
+    /// dialog, but Enter on a dropdown still opens it.
+    AcceptWhenIdle,
+    /// Enter always presses the default button, except on a focused button,
+    /// which it presses instead. Nothing else consumes it.
+    ///
+    /// Turbo Vision's own rule, and Windows'. A dropdown then needs Space.
+    AlwaysAccept,
+}
+
 /// What pressing a button does to the form.
 ///
 /// The distinction Ok and Cancel actually encoded was never their labels — it
@@ -469,6 +497,8 @@ pub struct FormState<A> {
     /// Each field's `restore` actions as captured when the form opened.
     /// Parallel to `fields`.
     originals: Vec<Vec<A>>,
+    /// How far Enter reaches. See [`EnterReach`].
+    enter_reach: EnterReach,
     /// Whether the user has changed each field since the form opened.
     /// Parallel to `fields`.
     ///
@@ -613,7 +643,19 @@ impl<A: Clone> FormState<A> {
             popup: None,
             originals,
             dirty,
+            enter_reach: EnterReach::default(),
         }
+    }
+
+    /// Choose how far Enter reaches. See [`EnterReach`].
+    pub fn with_enter_reach(mut self, reach: EnterReach) -> Self {
+        self.enter_reach = reach;
+        self
+    }
+
+    /// How far Enter currently reaches.
+    pub fn enter_reach(&self) -> EnterReach {
+        self.enter_reach
     }
 
     /// Swap in a freshly built field list without disturbing the interaction.
@@ -989,6 +1031,22 @@ impl<A: Clone> FormState<A> {
     /// treats specially.
     fn activate(&mut self) -> FormOutcome<A> {
         let focus = self.focus;
+        // A focused button is pressed under every policy: if you tabbed to
+        // Cancel, Enter presses Cancel rather than reaching past it.
+        if matches!(
+            self.fields.get(focus).map(|f| &f.kind),
+            Some(FieldKind::Button { .. })
+        ) {
+            return self.press_button(focus);
+        }
+        if self.enter_reach == EnterReach::AlwaysAccept {
+            let committed = self.commit_entry();
+            let mut outcome = self.press_default();
+            let mut actions = committed;
+            actions.append(&mut outcome.actions);
+            outcome.actions = actions;
+            return outcome;
+        }
         match self.fields.get(focus).map(|f| &f.kind) {
             Some(FieldKind::Choice { selected, .. }) => {
                 self.popup = Some(Popup {
@@ -1005,6 +1063,14 @@ impl<A: Clone> FormState<A> {
             Some(FieldKind::Toggle { .. }) => self.flip_toggle(),
             Some(FieldKind::Text { .. }) | Some(FieldKind::Number { .. }) => {
                 let committed = self.commit_entry();
+                if self.enter_reach == EnterReach::OperateOnly {
+                    // Commit the value, but stop there: this form does not
+                    // expect Enter to close it.
+                    return FormOutcome {
+                        actions: committed,
+                        close: false,
+                    };
+                }
                 let mut outcome = self.press_default();
                 // The field's own value is reported before whatever the
                 // button had to say about it.
@@ -1013,6 +1079,7 @@ impl<A: Clone> FormState<A> {
                 outcome.actions = actions;
                 outcome
             }
+            _ if self.enter_reach == EnterReach::OperateOnly => FormOutcome::nothing(),
             _ => self.press_default(),
         }
     }
@@ -1436,7 +1503,7 @@ mod tests {
 
     #[test]
     fn number_with_an_empty_buffer_commits_nothing_but_still_accepts() {
-        let mut f = form();
+        let mut f = form().with_enter_reach(EnterReach::AcceptWhenIdle);
         f.set_focus(3);
         let out = f.handle(FormEvent::Enter);
         // Nothing was typed, so nothing is committed — but Enter still means
@@ -1621,7 +1688,7 @@ mod tests {
 
     #[test]
     fn committing_a_number_accepts_the_form_in_one_keystroke() {
-        let mut f = form();
+        let mut f = form().with_enter_reach(EnterReach::AcceptWhenIdle);
         f.set_focus(3);
         f.handle(FormEvent::Char('3'));
         f.handle(FormEvent::Char('0'));
@@ -1827,6 +1894,64 @@ mod tests {
         let outcome = bare.handle(FormEvent::Enter);
         assert!(!outcome.close, "nothing to press, so nothing happens");
         let _ = f.handle(FormEvent::Escape);
+    }
+
+    #[test]
+    fn enter_does_not_close_a_form_by_default() {
+        // OperateOnly is the default: a form that does not expect Enter to
+        // close it never will, whatever its buttons say.
+        let mut f = text_form("hi", 16);
+        assert_eq!(f.enter_reach(), EnterReach::OperateOnly);
+        let outcome = f.handle(FormEvent::Enter);
+        assert!(!outcome.close, "Enter commits but does not accept");
+        assert_eq!(
+            outcome.actions,
+            alloc::vec![TestOp::A],
+            "the value is still committed"
+        );
+    }
+
+    #[test]
+    fn always_accept_reaches_the_default_button_even_from_a_dropdown() {
+        let mut f = form().with_enter_reach(EnterReach::AlwaysAccept);
+        let outcome = f.handle(FormEvent::Enter);
+        assert!(
+            f.popup().is_none(),
+            "under AlwaysAccept nothing else consumes Enter"
+        );
+        assert!(outcome.close);
+    }
+
+    #[test]
+    fn always_accept_still_presses_a_focused_button_rather_than_the_default() {
+        let mut f = role_form().with_enter_reach(EnterReach::AlwaysAccept);
+        f.set_focus(3); // Cancel
+        let outcome = f.handle(FormEvent::Enter);
+        assert!(outcome.close);
+        assert!(
+            outcome.actions.contains(&TestOp::Off) || outcome.actions.is_empty(),
+            "Cancel was pressed, not OK"
+        );
+    }
+
+    #[test]
+    fn accept_when_idle_leaves_the_dropdown_its_enter() {
+        let mut f = form().with_enter_reach(EnterReach::AcceptWhenIdle);
+        f.handle(FormEvent::Enter);
+        assert!(f.popup().is_some(), "a dropdown still opens on Enter");
+    }
+
+    #[test]
+    fn space_operates_the_control_under_every_policy() {
+        for reach in [
+            EnterReach::OperateOnly,
+            EnterReach::AcceptWhenIdle,
+            EnterReach::AlwaysAccept,
+        ] {
+            let mut f = form().with_enter_reach(reach);
+            f.handle(FormEvent::Char(' '));
+            assert!(f.popup().is_some(), "Space is uniform across {reach:?}");
+        }
     }
 
     fn role_form() -> FormState<TestOp> {
@@ -2150,7 +2275,7 @@ mod tests {
 
     #[test]
     fn enter_commits_the_text_and_accepts_the_form() {
-        let mut f = text_form("hi", 16);
+        let mut f = text_form("hi", 16).with_enter_reach(EnterReach::AcceptWhenIdle);
         let outcome = f.handle(FormEvent::Enter);
         assert_eq!(outcome.actions, alloc::vec![TestOp::A]);
         assert!(
@@ -2317,14 +2442,14 @@ mod tests {
         // "Open the dialog, press Enter to take the defaults" — Enter must
         // finish the form even when nothing was typed, and must not enrol the
         // untouched field in the Cancel restore set on the way out.
-        let mut f = num(); // buffer "120" == value 120; fields: [Number, OK]
+        let mut f = num().with_enter_reach(EnterReach::AcceptWhenIdle);
         let out = f.handle(FormEvent::Enter);
         assert!(out.actions.is_empty(), "unchanged value emits no action");
         assert!(out.close, "Enter still reaches the default button");
 
         // A fresh form, to check the field stayed clean rather than merely
         // silent: Escape must restore nothing.
-        let mut f = num();
+        let mut f = num().with_enter_reach(EnterReach::AcceptWhenIdle);
         f.handle(FormEvent::Enter);
         let cancel = f.handle(FormEvent::Escape);
         assert!(
