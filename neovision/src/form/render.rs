@@ -35,10 +35,17 @@ pub struct FormTheme {
     pub dim: u8,
     /// The panel title.
     pub title: u8,
-    /// Reserved for hosts that draw the edit caret as an attribute rather
-    /// than as a glyph. [`render`] itself never uses it: the caret is
-    /// reported out-of-band as a [`TextCursor`] by [`render_with_cursor`], so
-    /// that drawing it cannot overwrite the digit underneath.
+    /// Caret colour, for a themed host that draws the caret itself.
+    ///
+    /// [`render`] never reads this. The caret is reported out-of-band as a
+    /// [`TextCursor`] by [`render_with_cursor`] — carrying position and shape,
+    /// but deliberately not colour — so that drawing it cannot overwrite the
+    /// glyph underneath.
+    ///
+    /// A host whose skin wants the caret in a specific colour reads this one.
+    /// A host that simply inverts the cell beneath the caret does not need it:
+    /// that is what [`CursorShape::Overtype`] describes, and what VGA hardware
+    /// does, drawing the cursor in the character's own foreground colour.
     pub cursor: u8,
     /// The whole-value selection highlight of a selected Number field. Reverse
     /// of the focused row bar (0x71) so selected digits read as a highlight
