@@ -136,6 +136,21 @@ published manually; afterwards `rust-lang/crates-io-auth-action` exchanges
 GitHub's OIDC token for a short-lived crates.io token and revokes it when the
 job ends. No publishing secret is ever stored in the repository.
 
+The release job runs in a GitHub `release` environment, and the crates.io
+trusted publisher is registered against that environment name. That is a second
+claim an attacker must satisfy beyond the pinned workflow filename, and it
+restricts deployment to `main` through GitHub rather than through this
+workflow's own triggers — so the restriction survives any later change to them.
+
+The environment deliberately carries **no required reviewers**. The release job
+runs on every push to `main` and no-ops unless there is something to release, so
+an approval rule would prompt on unrelated merges and train whoever holds it to
+approve without looking. The genuine human gate is the decision to merge the
+release PR; a second gate on the same decision buys nothing. If the repository
+later gains collaborators and a real approval step is wanted, the right shape is
+to trigger the release job on tag pushes so the prompt fires once per release
+rather than once per merge.
+
 ## Deliberately out of scope
 
 **Turbo Vision's `TGroup` / `TApplication` layer** — a view tree, a desktop,
