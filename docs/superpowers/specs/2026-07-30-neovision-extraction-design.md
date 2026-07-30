@@ -199,8 +199,10 @@ setting, press Enter, get its value list. BIOS is also why clusters were not
 made the primary picker: BIOS setups have no clusters at all, having solved the
 same problem with a popup, which is what `Choice` already is.
 
-Arrows are trapped inside a cluster and Tab is the way out, because Turbo
-Vision and Windows agree on that even though BIOS has no opinion.
+Arrows walk straight through a cluster rather than being trapped in it, and Tab
+skips the whole thing. Turbo Vision and Windows both trap, but only because an
+arrow inside a group *is* their choosing mechanism; arrows only move here, so
+the reason does not carry over.
 
 **A radio caret moves without choosing**, which native radio groups do not do.
 ARIA's radio pattern, HTML and Windows all move the selection with the caret,

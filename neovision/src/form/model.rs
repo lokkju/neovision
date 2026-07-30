@@ -764,6 +764,7 @@ impl<A: Clone> FormState<A> {
                     return out;
                 }
                 self.step_row(-1);
+                self.enter_cluster_from(-1);
                 self.reselect_focused();
                 FormOutcome::nothing()
             }
@@ -772,6 +773,7 @@ impl<A: Clone> FormState<A> {
                     return out;
                 }
                 self.step_row(1);
+                self.enter_cluster_from(1);
                 self.reselect_focused();
                 FormOutcome::nothing()
             }
@@ -900,29 +902,54 @@ impl<A: Clone> FormState<A> {
         }
     }
 
-    /// Move the caret inside the focused cluster, if that is where focus is.
+    /// Move the caret within the focused cluster.
     ///
-    /// Returns whether the cluster consumed the movement. It always does when
-    /// focus is on one: arrows are trapped inside a cluster and Tab is the way
-    /// out, which is what both Turbo Vision and Windows do.
+    /// Returns `None` when the move would leave the cluster, so the caller
+    /// steps to the next field instead — arrows walk the form's rows straight
+    /// through a cluster rather than being trapped in it.
+    ///
+    /// Turbo Vision and Windows both trap here, but for a reason that does not
+    /// apply: in both, an arrow key inside a group *is* the choosing
+    /// mechanism, which is why the group has to own the key. Arrows only move
+    /// here (see [`ClusterStyle::Radio`]), and a key that only moves has no
+    /// business stopping at a boundary the user cannot see a reason for.
+    /// Turbo Vision's trapping was also an artifact of a cluster being one
+    /// view in a `TGroup` tree, which this has no equivalent of.
     fn cluster_step(&mut self, delta: isize) -> Option<FormOutcome<A>> {
         let focus = self.focus;
-        let Some(FieldKind::Cluster {
-            style,
-            items,
-            cursor,
-        }) = self.fields.get_mut(focus).map(|f| &mut f.kind)
+        let Some(FieldKind::Cluster { items, cursor, .. }) =
+            self.fields.get_mut(focus).map(|f| &mut f.kind)
         else {
             return None;
         };
         if items.is_empty() {
-            return Some(FormOutcome::nothing());
+            return None;
         }
-        let n = items.len();
-        *cursor = (*cursor as isize + delta).rem_euclid(n as isize) as usize;
-        // Moving never chooses, whatever the style: see `ClusterStyle::Radio`.
-        let _ = style;
+        let next = *cursor as isize + delta;
+        if next < 0 || next >= items.len() as isize {
+            // At an edge: let the form move on to the next field.
+            return None;
+        }
+        *cursor = next as usize;
         Some(FormOutcome::nothing())
+    }
+
+    /// Put a cluster's caret at the end the caret arrived from.
+    ///
+    /// Arrowing down into a cluster should land on its first item and arrowing
+    /// up on its last, so that continuing in the same direction continues to
+    /// feel like one list rather than jumping to wherever the caret last sat.
+    fn enter_cluster_from(&mut self, delta: isize) {
+        let focus = self.focus;
+        if let Some(FieldKind::Cluster { items, cursor, .. }) =
+            self.fields.get_mut(focus).map(|f| &mut f.kind)
+        {
+            *cursor = if delta > 0 {
+                0
+            } else {
+                items.len().saturating_sub(1)
+            };
+        }
     }
 
     /// Flip the item the focused cluster's caret is on.
@@ -2172,13 +2199,31 @@ mod tests {
     }
 
     #[test]
-    fn arrows_are_trapped_inside_a_cluster() {
+    fn arrows_walk_straight_through_a_cluster() {
+        // A key that only moves has no business stopping at a boundary, so
+        // arrows traverse the cluster's items and carry on to the next field.
         let mut f = cluster_form(ClusterStyle::Check);
         assert_eq!(f.focus(), 0);
-        for _ in 0..10 {
+        f.handle(FormEvent::Down); // item 1
+        f.handle(FormEvent::Down); // item 2
+        assert_eq!(f.focus(), 0, "still inside while there are items left");
+        assert_eq!(cluster_of(&f).0, 2);
+        f.handle(FormEvent::Down); // past the last item
+        assert_eq!(f.focus(), 1, "and out the far side");
+    }
+
+    #[test]
+    fn arrowing_back_into_a_cluster_lands_on_the_end_it_came_from() {
+        let mut f = cluster_form(ClusterStyle::Check);
+        // Out the bottom...
+        for _ in 0..3 {
             f.handle(FormEvent::Down);
         }
-        assert_eq!(f.focus(), 0, "arrows never leave the cluster");
+        assert_eq!(f.focus(), 1);
+        // ...and back up lands on the last item, not wherever the caret sat.
+        f.handle(FormEvent::Up);
+        assert_eq!(f.focus(), 0);
+        assert_eq!(cluster_of(&f).0, 2, "entered from below, so on the last");
     }
 
     #[test]
@@ -2189,12 +2234,20 @@ mod tests {
     }
 
     #[test]
-    fn a_cluster_caret_wraps_at_both_ends() {
+    fn a_cluster_caret_does_not_wrap_it_leaves() {
+        // Wrapping was a consequence of trapping; without the trap there is
+        // nothing to wrap against.
         let mut f = cluster_form(ClusterStyle::Check);
-        f.handle(FormEvent::Up);
-        assert_eq!(cluster_of(&f).0, 2, "up from the first item wraps to last");
-        f.handle(FormEvent::Down);
         assert_eq!(cluster_of(&f).0, 0);
+        f.handle(FormEvent::Up); // up from the first item
+        assert_ne!(f.focus(), 0, "left the cluster rather than wrapping");
+    }
+
+    #[test]
+    fn tab_still_skips_a_whole_cluster_rather_than_entering_it() {
+        let mut f = cluster_form(ClusterStyle::Check);
+        f.handle(FormEvent::Tab);
+        assert_eq!(f.focus(), 1, "Tab moves between fields, not within one");
     }
 
     #[test]

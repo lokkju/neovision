@@ -18,7 +18,7 @@ decided otherwise" should not look alike a year from now.
   - [Hotkeys are an inversion](#hotkeys-are-an-inversion)
 - [Controls](#controls)
   - [The dropdown stays, alongside clusters](#the-dropdown-stays-alongside-clusters)
-  - [Arrows are trapped inside a cluster](#arrows-are-trapped-inside-a-cluster)
+  - [Arrows walk straight through a cluster](#arrows-walk-straight-through-a-cluster)
   - [A radio caret moves without choosing](#a-radio-caret-moves-without-choosing)
   - [Buttons have roles, not kinds](#buttons-have-roles-not-kinds)
   - [Entry fields select their whole value on focus](#entry-fields-select-their-whole-value-on-focus)
@@ -136,20 +136,32 @@ better for two to four options that should all be visible. Both belong, and
 BIOS setups are the proof that a popup value list is a perfectly good primary
 picker — they use nothing else.
 
-### Arrows are trapped inside a cluster
+### Arrows walk straight through a cluster
 
-Up and Down move within a cluster and wrap. Tab is the way out.
+Up and Down move through a cluster's items and carry on to the next field. Tab
+skips the whole cluster.
 
-**Why.** Turbo Vision and Windows agree here even though they disagree about
-much else: a TV cluster is one view, a Windows radio group is one tab stop.
-Two independent traditions converging is worth more than the intuition that a
-form "looks like one long list".
+**Departure.** Turbo Vision and Windows both trap arrows inside a group.
 
-**Cost.** Arrow keys stop traversing the form at a cluster, which can surprise.
-Tab always works, and a cluster is visually distinct, so the boundary is
-discoverable.
+**Why depart.** They trap for a reason that does not apply here. In both, an
+arrow key inside a group *is* the choosing mechanism — which is exactly why the
+group has to own the key, and why a radio group is one tab stop. Arrows only
+move here (see [above](#a-radio-caret-moves-without-choosing)), and a key that
+only moves has no business stopping at a boundary the user cannot see a reason
+for. Turbo Vision's trapping was additionally an artifact of a cluster being one
+view in a `TGroup` tree, machinery this has no equivalent of.
 
-**Note.** BIOS setups have no opinion to follow — they have no clusters at all.
+What is left is a form that reads as one vertical list of rows and behaves like
+one, which is also what BIOS setup screens do — arrows traverse continuously and
+nothing is ever trapped.
+
+**Consequence.** Arrowing *into* a cluster puts the caret at the end it arrived
+from: down-arrow lands on the first item, up-arrow on the last. Otherwise
+continuing in one direction would jump to wherever the caret happened to sit.
+
+**Note.** This decision and the one above are load-bearing on each other. If a
+radio caret is ever made to choose as it moves again, trapping has to come
+back with it.
 
 ### A radio caret moves without choosing
 
