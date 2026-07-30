@@ -35,8 +35,9 @@ use crossterm::{
 
 use neovision::neovision_core::cp437;
 use neovision::{
-    render_with_cursor, Cell, CellBuffer, CellDraw, ChoiceOption, CursorShape, EnterReach, Field,
-    FieldKind, FormEvent, FormState, LayerStack, Point, Size, TextCursor, Theme,
+    render_with_cursor, Cell, CellBuffer, CellDraw, ChoiceOption, ClusterItem, ClusterStyle,
+    CursorShape, EnterReach, Field, FieldKind, FormEvent, FormState, LayerStack, Point, Size,
+    TextCursor, Theme,
 };
 
 /// What this demo's form can ask for.
@@ -267,6 +268,56 @@ fn demo_form() -> FormState<Action> {
                     commit: |s| Action::SetName(s.to_string()),
                 },
                 restore: vec![Action::SetName("default".to_string())],
+            },
+            Field {
+                label: "~V~ideo",
+                kind: FieldKind::Cluster {
+                    style: ClusterStyle::Radio,
+                    items: vec![
+                        ClusterItem {
+                            label: "~C~GA".to_string(),
+                            on: true,
+                            on_action: Action::SetTheme("CGA"),
+                            off_action: None,
+                        },
+                        ClusterItem {
+                            label: "~E~GA".to_string(),
+                            on: false,
+                            on_action: Action::SetTheme("EGA"),
+                            off_action: None,
+                        },
+                        ClusterItem {
+                            label: "V~G~A".to_string(),
+                            on: false,
+                            on_action: Action::SetTheme("VGA"),
+                            off_action: None,
+                        },
+                    ],
+                    cursor: 0,
+                },
+                restore: vec![Action::SetTheme("CGA")],
+            },
+            Field {
+                label: "Opt~i~ons",
+                kind: FieldKind::Cluster {
+                    style: ClusterStyle::Check,
+                    items: vec![
+                        ClusterItem {
+                            label: "Sc~a~nlines".to_string(),
+                            on: true,
+                            on_action: Action::SetSound(true),
+                            off_action: Some(Action::SetSound(false)),
+                        },
+                        ClusterItem {
+                            label: "~B~link".to_string(),
+                            on: false,
+                            on_action: Action::SetSound(true),
+                            off_action: Some(Action::SetSound(false)),
+                        },
+                    ],
+                    cursor: 0,
+                },
+                restore: vec![],
             },
             Field {
                 label: "S~o~und",
