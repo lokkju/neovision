@@ -19,6 +19,7 @@ decided otherwise" should not look alike a year from now.
   - [Hotkeys are an inversion](#hotkeys-are-an-inversion)
 - [Controls](#controls)
   - [The dropdown stays, alongside clusters](#the-dropdown-stays-alongside-clusters)
+  - [A dropdown is marked, a text field is not](#a-dropdown-is-marked-a-text-field-is-not)
   - [Arrows walk straight through a cluster](#arrows-walk-straight-through-a-cluster)
   - [A radio caret moves without choosing](#a-radio-caret-moves-without-choosing)
   - [Buttons have roles, not kinds](#buttons-have-roles-not-kinds)
@@ -28,6 +29,7 @@ decided otherwise" should not look alike a year from now.
   - [A caret must contrast against the row it lands on](#a-caret-must-contrast-against-the-row-it-lands-on)
   - [A scrollbar appears only when it means something](#a-scrollbar-appears-only-when-it-means-something)
   - [One char is one cell](#one-char-is-one-cell)
+  - [Generated artifacts are checked, not trusted](#generated-artifacts-are-checked-not-trusted)
 - [Geometry](#geometry)
   - [Layout is separate from theme](#layout-is-separate-from-theme)
 - [Undo](#undo)
@@ -163,6 +165,20 @@ cluster when there are many options or vertical space is short; a cluster is
 better for two to four options that should all be visible. Both belong, and
 BIOS setups are the proof that a popup value list is a perfectly good primary
 picker — they use nothing else.
+
+### A dropdown is marked, a text field is not
+
+`Choice` draws a down triangle on the last cell inside its brackets:
+`[Classic            ▼]`. `Text` draws nothing extra.
+
+**Why.** Without it the two are indistinguishable — both are a value in
+brackets — yet only one of them opens. A control whose affordance is invisible
+is a control users do not find.
+
+**Cost.** One cell of the value column, taken from the value rather than added
+to the panel, so a dropdown is exactly as wide as every other field. Turbo
+Vision had no dropdown and so no convention to borrow; the triangle is the one
+DOS and Windows both settled on.
 
 ### Arrows walk straight through a cluster
 
@@ -330,6 +346,21 @@ should not have to pre-validate them.
 **Consequence.** A label longer than its column is truncated. It used to run on
 under the value beside it and be overwritten mid-word, because `write_str` stops
 at the layer's edge rather than the column's.
+
+### Generated artifacts are checked, not trusted
+
+`docs/demo.gif` and the README's rendered frame both come out of the demos, and
+both are committed. CI regenerates them and fails on any diff.
+
+**Why bother.** A committed artifact produced by code drifts the moment the code
+changes and nobody remembers to re-run the generator — and a screenshot that
+quietly stops matching the software is worse than none, because it is believed.
+
+**What it rests on.** Rendering is deterministic: same state in, same bytes out.
+The GIF encoder is fed palette indices rather than quantized colour, so there is
+no dithering to vary, and `Cargo.lock` pins the encoder. If a rendering change
+is intended, `mise run docs-refresh` regenerates both and the diff is the
+evidence that it did what was meant.
 
 ## Undo
 

@@ -77,6 +77,27 @@ jobs:
       # concern and must not constrain what the published crates support.
       - run: cargo check -p neovision-core -p neovision --lib
 
+  generated-docs:
+    name: Generated docs are current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The GIF and the README's rendered frame come out of the demos but are
+      # committed by hand, so they can drift silently. Regenerating and
+      # diffing makes that impossible rather than merely unlikely.
+      - name: Regenerate the committed doc artifacts
+        run: ./.mise/tasks/docs-refresh
+      - name: Fail if they were out of date
+        run: |
+          if ! git diff --exit-code -- docs/demo.gif README.md; then
+            echo
+            echo "docs/demo.gif or the README frame is out of date."
+            echo "Run 'mise run docs-refresh' and commit the result."
+            exit 1
+          fi
+
   no_std:
     name: Build for a no_std target
     runs-on: ubuntu-latest

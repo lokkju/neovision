@@ -26,16 +26,22 @@ tradition it descends from.
 ```
 neovision-core   Substrate. Cell / CellBuffer, Layer / LayerStack + compositor,
                  TextCursor / CursorShape, BoxChars, CellDraw, the CP437 table,
-                 geom (Point/Rect/Size). Zero dependencies.
+                 the VGA 8x16 and 8x8 faces behind a `font` feature, geom
+                 (Point/Rect/Size). Zero dependencies.
         ▲
 neovision        The CUA widget toolkit. FormState / Field / FieldKind
-                 (Choice/Number/Toggle/ReadOnly/Button), the entry-field editing
-                 state machine, the CUA renderer (render / render_with_cursor →
-                 Layers + TextCursor), FormTheme, FormEvent / FormOutcome.
-                 Re-exports neovision-core, so `cargo add neovision` yields
-                 widgets + primitives.
+                 (Choice/Text/Number/Toggle/Cluster/ReadOnly/Button), one edit
+                 state machine shared by the entry kinds, the CUA renderer
+                 (render / render_with_cursor / render_themed → Layers +
+                 TextCursor), Theme + HotkeyAttrs, Layout, EnterReach,
+                 ButtonRole, FormEvent / FormOutcome. Re-exports
+                 neovision-core, so `cargo add neovision` yields widgets +
+                 primitives.
 
-examples/        Hosts. Living documentation, never published as a library.
+examples/        Three hosts. Living documentation, never published.
+                 terminal.rs      cells → crossterm
+                 framebuffer.rs   cells → pixels, and the README's animation
+                 embedded.rs      cells → embedded-graphics DrawTarget
 ```
 
 ### Why there is no third "controller" crate
@@ -111,7 +117,7 @@ a render test.
 |---|---|---|
 | License | MIT | Simplest permissive licence; GPLv2-compatible. Patent exposure for a cell renderer is nil, so the Apache-2.0 dual form bought nothing here. |
 | Visibility | Public | Required for crates.io, docs.rs, and OIDC publishing. |
-| Version | 0.1.0 | Fresh crate. Inheriting a version number from an unrelated project would misrepresent its history. |
+| Version | 0.1.0, then 1.0.0 | Started fresh rather than inheriting a version from an unrelated project. 1.0.0 was cut once the parity pass settled the API; release-plz computes 0.2.0 from a 0.x manifest, since a breaking change bumps the minor below 1.0, so the major was set by hand. |
 | Release tooling | release-plz | Conventional commits drive the bump, changelog (via git-cliff), tag, and crates.io publish. Both crates share a `version_group` so they move in lockstep. |
 | cargo-dist | Rejected | It ships prebuilt binaries. These are library crates; the demo is `cargo run --example`. Nobody needs a prebuilt copy of it. |
 | MSRV | 1.76 | Verified against that toolchain in CI, not merely declared. `core::iter::repeat_n` was replaced with `repeat().take()` rather than let one convenience raise the floor to 1.82. |
@@ -135,7 +141,7 @@ exactly one cell, which is what lets callers reason about column alignment.
 The extraction is mechanically safe because the suite came with it. Every claim
 below is checked in CI on each push:
 
-- 226 tests (unit + doctests)
+- Over 230 tests (unit + doctests)
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `cargo doc --workspace --no-deps` with `RUSTDOCFLAGS=-D warnings`
 - MSRV build against the 1.76 toolchain

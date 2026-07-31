@@ -299,6 +299,16 @@ fn value_column<A>(field: &Field<A>, focused: bool, layout: Layout) -> String {
             let window: String = buffer.chars().skip(first).take(visible).collect();
             alloc::format!("[{}]", fit(&window, visible))
         }
+        // A dropdown is marked, because otherwise it is indistinguishable
+        // from a text field: both are a value in brackets, but only one of
+        // them opens. The marker costs a cell of the value.
+        FieldKind::Choice { .. } => alloc::format!(
+            "[{}\u{25BC}]",
+            fit(
+                &value_text(field),
+                layout.text_visible_w().saturating_sub(1) as usize
+            )
+        ),
         _ => alloc::format!(
             "[{}]",
             fit(&value_text(field), layout.text_visible_w() as usize)
@@ -516,35 +526,57 @@ fn render_impl<A>(
                 value_attr,
             );
         }
-        // Selection highlight for a focused, selected Number field.
-        // `selected` (whole-value selection on entry, Turbo Vision-style)
-        // repaints every digit cell in `theme.selection`. The edit caret
-        // itself is deliberately not drawn into the cell buffer — see
-        // `text_cursor` below, which derives a `TextCursor` descriptor
-        // instead, leaving the host to draw the caret so it never overwrites
-        // the digit glyph beneath it.
+        // Whole-value selection highlight, for either entry kind.
+        //
+        // `selected` is Turbo Vision's "selected on entry": the value is shown
+        // highlighted and the first character typed replaces it. Both entry
+        // kinds share that state, so both must show it — a number that
+        // highlights and a text field that does not is the same control
+        // behaving two ways.
+        //
+        // The caret is deliberately not drawn into the buffer here; see
+        // `text_cursor` below, which hands the host a descriptor instead so
+        // drawing it cannot overwrite the glyph beneath.
         if focused {
-            if let FieldKind::Number {
-                buffer, selected, ..
-            } = &field.kind
-            {
-                if *selected {
-                    let digits_start = layout.value_x() + 1; // past the '['
-                                                             // `Layer::get` returns a `LayerCell` enum, not a `Cell`,
-                                                             // so the digits already drawn by `value_column` above
-                                                             // can't be read back and re-attributed in place — instead
-                                                             // re-write each digit char from `buffer` with the
-                                                             // selection attribute.
-                    for (i, ch) in buffer.bytes().enumerate() {
-                        body.put(
-                            digits_start + i as u16,
-                            row,
-                            Cell {
-                                ch,
-                                attr: theme.selection,
-                            },
-                        );
-                    }
+            // `Layer::get` returns a `LayerCell`, not a `Cell`, so what
+            // `value_column` already drew cannot be read back and
+            // re-attributed in place — the visible run is rewritten instead.
+            let highlighted: Option<String> = match &field.kind {
+                FieldKind::Number {
+                    buffer,
+                    selected: true,
+                    ..
+                } => Some(buffer.clone()),
+                FieldKind::Text {
+                    buffer,
+                    cursor,
+                    selected: true,
+                    ..
+                } => {
+                    // Only what is on screen: a long value is scrolled, and
+                    // highlighting past the window would run over the bracket.
+                    let first = text_scroll(*cursor, layout);
+                    Some(
+                        buffer
+                            .chars()
+                            .skip(first)
+                            .take(layout.text_visible_w() as usize)
+                            .collect(),
+                    )
+                }
+                _ => None,
+            };
+            if let Some(text) = highlighted {
+                let start = layout.value_x() + 1; // past the '['
+                for (i, ch) in text.chars().enumerate() {
+                    body.put(
+                        start + i as u16,
+                        row,
+                        Cell {
+                            ch: cp437_byte(ch),
+                            attr: theme.selection,
+                        },
+                    );
                 }
             }
         }
@@ -1126,6 +1158,25 @@ mod tests {
         assert_eq!(buf.get(s_at, row).attr, buf.get(s_at + 1, row).attr);
     }
 
+    /// A text field as focus finds it: whole value selected.
+    fn text_form_selected(initial: &str) -> FormState<TestOp> {
+        FormState::new(
+            "T",
+            alloc::vec![Field {
+                label: "Name",
+                kind: FieldKind::Text {
+                    buffer: initial.to_string(),
+                    cursor: initial.chars().count(),
+                    selected: true,
+                    overtype: false,
+                    max_len: 64,
+                    commit: |_| TestOp::A,
+                },
+                restore: alloc::vec![],
+            }],
+        )
+    }
+
     fn text_form(initial: &str, cursor: usize) -> FormState<TestOp> {
         FormState::new(
             "T",
@@ -1142,6 +1193,103 @@ mod tests {
                 restore: alloc::vec![],
             }],
         )
+    }
+
+    #[test]
+    fn both_entry_kinds_highlight_a_whole_selected_value() {
+        // They share one edit state, so a number that highlights and a text
+        // field that does not is the same control behaving two ways.
+        let screen = Size::new(80, 25);
+        let sel = Theme::DEFAULT.selection;
+
+        let text = text_form_selected("abc");
+        let buf = flatten(render(&text, screen), screen);
+        let row = find_row(&buf, "Name").expect("text row");
+        let at = col_of(&buf, row, b'[') + 1;
+        assert_eq!(buf.get(at, row).attr, sel, "text value is highlighted");
+        assert_eq!(buf.get(at + 2, row).attr, sel, "...all of it");
+
+        let num: FormState<TestOp> = FormState::new(
+            "T",
+            alloc::vec![Field {
+                label: "Period",
+                kind: FieldKind::Number {
+                    value: 120,
+                    buffer: "120".to_string(),
+                    cursor: 3,
+                    selected: true,
+                    overtype: false,
+                    min: 0,
+                    max: 999,
+                    unit: "s",
+                    commit: |_| TestOp::A,
+                },
+                restore: alloc::vec![],
+            }],
+        );
+        let buf = flatten(render(&num, screen), screen);
+        let row = find_row(&buf, "Period").expect("number row");
+        let at = col_of(&buf, row, b'[') + 1;
+        assert_eq!(buf.get(at, row).attr, sel, "number value too");
+    }
+
+    #[test]
+    fn the_highlight_stops_at_the_bracket_on_a_scrolled_text_field() {
+        let screen = Size::new(80, 25);
+        let long = "x".repeat(Layout::DEFAULT.text_visible_w() as usize + 10);
+        let f = text_form_selected(&long);
+        let buf = flatten(render(&f, screen), screen);
+        let row = find_row(&buf, "Name").expect("text row");
+        let close = col_of(&buf, row, b']');
+        assert_ne!(
+            buf.get(close, row).attr,
+            Theme::DEFAULT.selection,
+            "highlighting past the window would run over the bracket"
+        );
+    }
+
+    #[test]
+    fn a_dropdown_is_marked_so_it_is_not_mistaken_for_a_text_field() {
+        let screen = Size::new(80, 25);
+        let buf = flatten(render(&form(), screen), screen);
+        let row = find_row(&buf, "Colour").expect("the choice row");
+        // The marker sits on the last cell inside the brackets.
+        let close = col_of(&buf, row, b']');
+        assert_eq!(
+            buf.get(close - 1, row).ch,
+            0x1F,
+            "a dropdown carries a down triangle: {}",
+            row_text(&buf, row)
+        );
+    }
+
+    #[test]
+    fn a_text_field_carries_no_dropdown_marker() {
+        let screen = Size::new(80, 25);
+        let f = text_form("abc", 3);
+        let buf = flatten(render(&f, screen), screen);
+        let row = find_row(&buf, "Name").expect("the text row");
+        let close = col_of(&buf, row, b']');
+        assert_ne!(
+            buf.get(close - 1, row).ch,
+            0x1F,
+            "only a dropdown opens, so only a dropdown is marked"
+        );
+    }
+
+    #[test]
+    fn the_marker_costs_a_cell_of_the_value_rather_than_overflowing() {
+        let screen = Size::new(80, 25);
+        let buf = flatten(render(&form(), screen), screen);
+        let row = find_row(&buf, "Colour").expect("the choice row");
+        let open = col_of(&buf, row, b'[');
+        let close = col_of(&buf, row, b']');
+        // Same bracket span as any other editable value.
+        assert_eq!(
+            close - open - 1,
+            Layout::DEFAULT.text_visible_w(),
+            "the dropdown must not be wider than the column"
+        );
     }
 
     #[test]
