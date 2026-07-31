@@ -271,6 +271,13 @@ fn to_form_event(key: Key, shift: bool, alt: bool) -> Option<FormEvent> {
             return Some(FormEvent::Hotkey(c));
         }
     }
+    if let Some(c) = letter_of(key) {
+        return Some(FormEvent::Char(if shift {
+            c.to_ascii_uppercase()
+        } else {
+            c
+        }));
+    }
     Some(match key {
         Key::Up => FormEvent::Up,
         Key::Down => FormEvent::Down,

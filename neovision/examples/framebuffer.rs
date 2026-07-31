@@ -191,7 +191,17 @@ fn to_form_event(key: Key, shift: bool, alt: bool) -> Option<FormEvent> {
             return Some(FormEvent::Hotkey(c));
         }
     }
+    if let Some(c) = letter_of(key) {
+        // Plain letters are text, not accelerators. A `Text` field is useless
+        // without them.
+        return Some(FormEvent::Char(if shift {
+            c.to_ascii_uppercase()
+        } else {
+            c
+        }));
+    }
     Some(match key {
+        Key::Space => FormEvent::Char(' '),
         Key::Up => FormEvent::Up,
         Key::Down => FormEvent::Down,
         Key::Left => FormEvent::Left,
