@@ -16,10 +16,15 @@
 //! ```console
 //! cargo run --example framebuffer              # a window
 //! cargo run --example framebuffer -- --single  # one PPM frame
+//! cargo run --example framebuffer -- --gif     # the README animation
+//! cargo run --example framebuffer -- --card    # the social preview PNG
 //! ```
 //!
 //! `--single` writes a frame and exits, needing no display at all, so the
-//! rasterizer stays verifiable in CI where no window can open.
+//! rasterizer stays verifiable in CI where no window can open. `--gif` and
+//! `--card` are the same idea applied to the committed documentation images:
+//! they are generated rather than captured, so they cannot drift from what the
+//! code actually draws.
 
 use std::io::{self, Write};
 
@@ -104,6 +109,24 @@ impl Frame {
     /// Resolve to the packed `0x00RRGGBB` a window wants.
     fn to_argb(&self) -> Vec<u32> {
         self.px.iter().map(|&i| PALETTE[i as usize]).collect()
+    }
+
+    /// Enlarge by an integer factor, replicating pixels.
+    ///
+    /// Nearest-neighbour is the only correct filter here. Every other one
+    /// interpolates, and interpolating a glyph whose strokes are one pixel wide
+    /// is how text-mode art turns to mush. Replication also keeps the result
+    /// palette-indexed, so a scaled frame still encodes without quantization.
+    fn scaled(&self, factor: usize) -> Self {
+        let (w, h) = (self.w * factor, self.h * factor);
+        let mut px = vec![0u8; w * h];
+        for y in 0..h {
+            let src = (y / factor) * self.w;
+            for x in 0..w {
+                px[y * w + x] = self.px[src + x / factor];
+            }
+        }
+        Self { px, w, h }
     }
 }
 
@@ -448,6 +471,22 @@ fn write_ppm(frame: &Frame, path: &str) -> io::Result<()> {
     out.flush()
 }
 
+/// Write the frame as an indexed PNG, for the repository's social preview.
+///
+/// Indexed rather than RGB for the same reason the GIF is: the pixels already
+/// *are* palette indices, so there is nothing to convert and nothing to lose.
+fn write_png(frame: &Frame, path: &str) -> io::Result<()> {
+    let file = io::BufWriter::new(std::fs::File::create(path)?);
+    let mut encoder = png::Encoder::new(file, frame.w as u32, frame.h as u32);
+    encoder.set_color(png::ColorType::Indexed);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.set_palette(gif_palette());
+    encoder
+        .write_header()
+        .and_then(|mut w| w.write_image_data(&frame.px))
+        .map_err(|e| io::Error::other(format!("png: {e}")))
+}
+
 /// The 16 VGA colours flattened to the RGB triples a GIF global palette wants.
 fn gif_palette() -> Vec<u8> {
     let mut p = Vec::with_capacity(16 * 3);
@@ -464,29 +503,38 @@ fn gif_palette() -> Vec<u8> {
 /// No quantization happens anywhere: a cell's attribute nibble *is* a palette
 /// index, and a GIF is an indexed format, so the frames go out exactly as
 /// rasterized. That is also why the files are small despite being 640x400.
-fn write_gif(path: &str, script: &[FormEvent], delay_cs: u16) -> io::Result<()> {
+fn write_gif(
+    path: &str,
+    script: &[FormEvent],
+    delay_cs: u16,
+    tail_cs: u16,
+    scale: usize,
+) -> io::Result<()> {
     let screen = Size::new(COLS, ROWS);
     let mut state = demo_form();
     let mut file = std::fs::File::create(path)?;
     let palette = gif_palette();
 
-    let px_w = COLS * font::GLYPH_W;
-    let px_h = ROWS * font::GLYPH_H;
+    let px_w = COLS * font::GLYPH_W * scale as u16;
+    let px_h = ROWS * font::GLYPH_H * scale as u16;
     let mut encoder = gif::Encoder::new(&mut file, px_w, px_h, &palette)
         .map_err(|e| io::Error::other(format!("gif header: {e}")))?;
     encoder
         .set_repeat(gif::Repeat::Infinite)
         .map_err(|e| io::Error::other(format!("gif repeat: {e}")))?;
 
-    // One frame before any key, then one after each — and a long hold on the
-    // last so a loop does not snap back the instant it finishes.
+    // One frame before any key, then one after each. The last frame gets
+    // `tail_cs` rather than `delay_cs`: a documentation loop wants a hold there
+    // so it does not snap back the instant it finishes, and a loop meant for a
+    // social feed wants no hold at all, because a still frame in a feed reads
+    // as a video that has stalled.
     let render = |state: &FormState<Action>| {
         let (composed, cursor) = compose(
             state,
             screen,
             "Tab/arrows · Enter edits · Alt+letter jumps · Esc quits",
         );
-        rasterize(&composed, cursor, Theme::DEFAULT)
+        rasterize(&composed, cursor, Theme::DEFAULT).scaled(scale)
     };
 
     let mut prev = render(&state);
@@ -505,7 +553,7 @@ fn write_gif(path: &str, script: &[FormEvent], delay_cs: u16) -> io::Result<()> 
         state.handle(*ev);
         let next = render(&state);
         let delay = if i + 1 == script.len() {
-            delay_cs * 5
+            tail_cs
         } else {
             delay_cs
         };
@@ -561,6 +609,71 @@ fn dirty_rect(prev: &Frame, next: &Frame) -> ((u16, u16, u16, u16), Vec<u8>) {
 const COLS: u16 = 80;
 const ROWS: u16 = 25;
 
+/// The social preview card: the still image GitHub shows when anyone links the
+/// repository, on X, Reddit, Discord, Slack, Mastodon and lobste.rs alike.
+///
+/// GitHub documents 1280x640 as the size it displays best, and that number is
+/// reachable exactly rather than approximately: 80 columns of an 8-pixel face
+/// is 640, 20 rows of a 16-pixel face is 320, and doubling both lands on
+/// 1280x640 with no cropping, letterboxing or resampling anywhere. The card is
+/// therefore whole cells at an integer scale, which is the only way glyph
+/// strokes one pixel wide survive being shown at thumbnail size.
+///
+/// Twenty rows rather than the demo's twenty-five because a card wants the
+/// dialog to fill it. The same panel on a 25-row desktop leaves a band of
+/// wallpaper that reads as wasted space once the image is scaled down.
+const CARD_ROWS: u16 = 20;
+const CARD_SCALE: usize = 2;
+
+/// The card's status line. A demo tells you which keys to press; a card is seen
+/// by people who have not got the repository open yet, so it spends the line on
+/// where to find it instead.
+const CARD_STATUS: &str = "no_std character-cell UI for Rust  ·  github.com/lokkju/neovision";
+
+/// The form at rest, with nothing opened over it.
+///
+/// An open dropdown is better proof that this is a live widget set, and it was
+/// the first thing tried here. It photographs badly: the popup floats over the
+/// value column and leaves the brackets and unit suffixes of the fields behind
+/// it sticking out either side, which is exactly what a floating layer should
+/// do and exactly what reads as a rendering fault to somebody seeing the
+/// project for the first time at thumbnail size. The animation has room to show
+/// a popup opening and closing; a still does not.
+const CARD_SCRIPT: &[FormEvent] = &[];
+
+/// Write the social preview card.
+fn write_card(path: &str) -> io::Result<()> {
+    let mut state = demo_form();
+    for ev in CARD_SCRIPT {
+        state.handle(*ev);
+    }
+    let (composed, cursor) = compose(&state, Size::new(COLS, CARD_ROWS), CARD_STATUS);
+    let frame = rasterize(&composed, cursor, Theme::DEFAULT).scaled(CARD_SCALE);
+    write_png(&frame, path)?;
+    println!("wrote {} ({}x{} px)", path, frame.w, frame.h);
+    Ok(())
+}
+
+/// A shorter, faster cut of [`README_SCRIPT`] for a social feed.
+///
+/// The README animation is paced to be read: every state holds long enough to
+/// take in, and it runs about fourteen seconds. A feed is not read, it is
+/// scrolled past in two or three seconds, so this cut drops the middle of the
+/// interaction and keeps the two beats that carry the whole idea: a dropdown
+/// opening, and a value changing because of it.
+const SOCIAL_SCRIPT: &[FormEvent] = &[
+    FormEvent::Enter, // open the Palette dropdown
+    FormEvent::Down,  // highlight Amber
+    FormEvent::Enter, // choose it, and the field visibly changes
+    FormEvent::Tab,
+    FormEvent::Tab,       // -> Profile
+    FormEvent::Char('n'), // typing, so it is clearly not a slideshow
+    FormEvent::Char('e'),
+    FormEvent::Char('o'),
+    FormEvent::Tab,
+    FormEvent::Down, // -> Video, a radio cluster moving
+];
+
 /// The scripted interaction the README's animation shows: pick a palette from
 /// a popup, flip a toggle, type into the number field, then press OK.
 const README_SCRIPT: &[FormEvent] = &[
@@ -592,24 +705,42 @@ fn main() -> io::Result<()> {
     if args.iter().any(|a| a == "--single") {
         return single_frame(&args);
     }
-    if args.iter().any(|a| a == "--gif") {
-        let path = flag_value(&args, "--gif")
+    if args.iter().any(|a| a == "--card") {
+        let path = flag_value(&args, "--card")
             .cloned()
-            .unwrap_or_else(|| "demo.gif".to_string());
+            .unwrap_or_else(|| "social-card.png".to_string());
+        return write_card(&path);
+    }
+    // The README animation is paced to be read; the social cut is paced to be
+    // scrolled past, and is drawn at 2x because every social platform
+    // transcodes an uploaded GIF to H.264, whose chroma subsampling destroys
+    // one-pixel glyph strokes. Doubling them first is what survives it.
+    let social = args.iter().any(|a| a == "--social");
+    if social || args.iter().any(|a| a == "--gif") {
+        let (flag, default, delay, tail, scale) = if social {
+            ("--social", "demo-social.gif", 45, 45, 2)
+        } else {
+            ("--gif", "demo.gif", 60, 300, 1)
+        };
+        let path = flag_value(&args, flag)
+            .cloned()
+            .unwrap_or_else(|| default.to_string());
         let script: Vec<FormEvent> = match flag_value(&args, "--keys") {
             Some(keys) => keys
                 .split(',')
                 .filter(|t| !t.is_empty())
                 .map(|t| parse_key(t).ok_or_else(|| io::Error::other(format!("unknown key: {t}"))))
                 .collect::<io::Result<_>>()?,
+            None if social => SOCIAL_SCRIPT.to_vec(),
             None => README_SCRIPT.to_vec(),
         };
-        write_gif(&path, &script, 60)?;
+        write_gif(&path, &script, delay, tail, scale)?;
         let bytes = std::fs::metadata(&path)?.len();
         println!(
-            "wrote {} ({} frames, {} KiB)",
+            "wrote {} ({} frames, {:.1}s, {} KiB)",
             path,
             script.len() + 1,
+            (script.len() as f32 * delay as f32 + tail as f32) / 100.0,
             bytes / 1024
         );
         return Ok(());

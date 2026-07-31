@@ -8,6 +8,12 @@ set -euo pipefail
 
 cargo run --quiet --example framebuffer -- --gif docs/demo.gif
 
+# The social preview card GitHub shows wherever the repository gets linked, and
+# a shorter 2x cut of the animation for feeds that transcode GIFs to video.
+# Neither is referenced by the README, so nothing would notice them going stale.
+cargo run --quiet --example framebuffer -- --card docs/social-card.png
+cargo run --quiet --example framebuffer -- --social docs/demo-social.gif
+
 # The README shows one frame of the terminal host. Replace the first fenced
 # `text` block with a fresh render of it.
 python3 - <<'PY'
