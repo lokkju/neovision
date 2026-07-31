@@ -43,7 +43,7 @@ use minifb::{Key, KeyRepeat, Scale, Window, WindowOptions};
 use neovision::neovision_core::font;
 use neovision::{
     render_with_cursor, ButtonRole, Cell, CellBuffer, CellDraw, ChoiceOption, ClusterItem,
-    ClusterStyle, CursorShape, EnterReach, Field, FieldKind, FormEvent, FormState, LayerStack,
+    ClusterStyle, CursorShape, Field, FieldKind, FormEvent, FormState, LayerStack,
     Point as CellPoint, Size as CellSize, TextCursor, Theme,
 };
 
@@ -406,7 +406,10 @@ fn demo_form() -> FormState<Action> {
             Field::cancel(),
         ],
     )
-    .with_enter_reach(EnterReach::AcceptWhenIdle)
+    // Left on the library default, `EnterReach::OperateOnly`: Enter operates
+    // the focused control and never closes the form. `with_enter_reach` opts
+    // into the dialog readings, but a demo that quietly took one would
+    // misrepresent what the toolkit does out of the box.
 }
 
 fn desktop(size: CellSize, status: &str) -> CellBuffer {
