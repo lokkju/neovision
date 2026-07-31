@@ -4,6 +4,13 @@ All notable changes are recorded here. This file is generated from
 conventional commits by [git-cliff](https://git-cliff.org) via
 [release-plz](https://release-plz.dev).
 
+## [1.2.0] - 2026-07-31
+
+### Features
+
+- Add --card and --social outputs
+
+
 ## [1.1.0] - 2026-07-31
 
 ### Bug Fixes
