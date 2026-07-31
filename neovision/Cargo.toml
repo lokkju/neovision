@@ -38,6 +38,10 @@ gif = { version = "0.14", default-features = false, features = ["std", "raii_no_
 # The de-facto display abstraction for embedded Rust. no_std itself, so the
 # integration in examples/embedded.rs is the code a real device would ship.
 embedded-graphics = "0.8"
+# Only for `--card`, which writes the repository's social preview image. PNG is
+# the format GitHub's uploader documents, and an indexed PNG keeps the same
+# no-quantization property the GIF has: the palette goes out as the palette.
+png = { version = "0.17", default-features = false }
 
 [package.metadata.docs.rs]
 all-features = true

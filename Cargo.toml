@@ -11,7 +11,7 @@ repository = "https://github.com/lokkju/neovision"
 homepage = "https://github.com/lokkju/neovision"
 readme = "README.md"
 keywords = ["tui", "text-mode", "cp437", "no-std", "retro"]
-categories = ["command-line-interface", "no-std", "gui", "rendering"]
+categories = ["command-line-interface", "no-std", "gui", "rendering", "embedded"]
 rust-version = "1.76"
 
 [workspace.dependencies]
