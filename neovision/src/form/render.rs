@@ -299,6 +299,16 @@ fn value_column<A>(field: &Field<A>, focused: bool, layout: Layout) -> String {
             let window: String = buffer.chars().skip(first).take(visible).collect();
             alloc::format!("[{}]", fit(&window, visible))
         }
+        // A dropdown is marked, because otherwise it is indistinguishable
+        // from a text field: both are a value in brackets, but only one of
+        // them opens. The marker costs a cell of the value.
+        FieldKind::Choice { .. } => alloc::format!(
+            "[{}\u{25BC}]",
+            fit(
+                &value_text(field),
+                layout.text_visible_w().saturating_sub(1) as usize
+            )
+        ),
         _ => alloc::format!(
             "[{}]",
             fit(&value_text(field), layout.text_visible_w() as usize)
@@ -1142,6 +1152,50 @@ mod tests {
                 restore: alloc::vec![],
             }],
         )
+    }
+
+    #[test]
+    fn a_dropdown_is_marked_so_it_is_not_mistaken_for_a_text_field() {
+        let screen = Size::new(80, 25);
+        let buf = flatten(render(&form(), screen), screen);
+        let row = find_row(&buf, "Colour").expect("the choice row");
+        // The marker sits on the last cell inside the brackets.
+        let close = col_of(&buf, row, b']');
+        assert_eq!(
+            buf.get(close - 1, row).ch,
+            0x1F,
+            "a dropdown carries a down triangle: {}",
+            row_text(&buf, row)
+        );
+    }
+
+    #[test]
+    fn a_text_field_carries_no_dropdown_marker() {
+        let screen = Size::new(80, 25);
+        let f = text_form("abc", 3);
+        let buf = flatten(render(&f, screen), screen);
+        let row = find_row(&buf, "Name").expect("the text row");
+        let close = col_of(&buf, row, b']');
+        assert_ne!(
+            buf.get(close - 1, row).ch,
+            0x1F,
+            "only a dropdown opens, so only a dropdown is marked"
+        );
+    }
+
+    #[test]
+    fn the_marker_costs_a_cell_of_the_value_rather_than_overflowing() {
+        let screen = Size::new(80, 25);
+        let buf = flatten(render(&form(), screen), screen);
+        let row = find_row(&buf, "Colour").expect("the choice row");
+        let open = col_of(&buf, row, b'[');
+        let close = col_of(&buf, row, b']');
+        // Same bracket span as any other editable value.
+        assert_eq!(
+            close - open - 1,
+            Layout::DEFAULT.text_visible_w(),
+            "the dropdown must not be wider than the column"
+        );
     }
 
     #[test]
