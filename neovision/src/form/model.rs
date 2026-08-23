@@ -566,6 +566,18 @@ pub struct FormState<A> {
     /// actions the user never asked for can carry side effects beyond their
     /// own field, so an untouched field must stay untouched.
     dirty: Vec<bool>,
+    /// Panel inner width the trailing button run wraps against, for navigation.
+    ///
+    /// The renderer wraps an overflowing button run onto multiple rows from the
+    /// [`Layout`]'s inner width, but the model has no `Layout`, so by default
+    /// arrow-key navigation treats the whole run as one row — which then
+    /// disagrees with a wrapped render (Left/Right would cross a visual row
+    /// boundary; Up/Down could not step between button rows). Setting this via
+    /// [`with_button_wrap_width`](Self::with_button_wrap_width) makes
+    /// `focus_rows` split the run at the same widths the renderer does, and the
+    /// renderer honours it too, so the two never disagree. It should equal the
+    /// inner width the form is rendered at.
+    button_wrap_width: Option<u16>,
 }
 
 impl<A> FormState<A> {
@@ -581,6 +593,12 @@ impl<A> FormState<A> {
 
     pub fn fields(&self) -> &[Field<A>] {
         &self.fields
+    }
+
+    /// The pinned button-wrap width, if any. See
+    /// [`with_button_wrap_width`](Self::with_button_wrap_width).
+    pub fn button_wrap_width(&self) -> Option<u16> {
+        self.button_wrap_width
     }
 
     pub fn popup(&self) -> Option<&Popup> {
@@ -614,10 +632,17 @@ impl<A> FormState<A> {
 
     /// The focusable fields grouped into rows for arrow navigation.
     ///
-    /// Every focusable field is its own row, except a trailing run of
-    /// consecutive [`FieldKind::Button`] fields, which share one horizontal row
-    /// — the same grouping the renderer uses to lay OK/Cancel side by side. So
-    /// Up/Down move between rows and Left/Right move within a row.
+    /// Every focusable field is its own row, except the trailing run of
+    /// consecutive [`FieldKind::Button`] fields — the OK/Cancel/… bar. That run
+    /// shares one horizontal row by default, matching the renderer, so Up/Down
+    /// move between rows and Left/Right move within a row.
+    ///
+    /// When a button-wrap width is pinned (see
+    /// [`with_button_wrap_width`](Self::with_button_wrap_width)), the run is
+    /// split into the *same* rows the renderer wraps it into — measured through
+    /// the shared [`button_chrome_width`](crate::form::render::button_chrome_width)
+    /// and [`pack_button_rows`](crate::form::render::pack_button_rows) — so a
+    /// wide button that renders on its own line is also its own nav row.
     fn focus_rows(&self) -> Vec<Vec<usize>> {
         let n = self.fields.len();
         let mut btn_start = n;
@@ -633,7 +658,26 @@ impl<A> FormState<A> {
         if btn_start < n {
             let bar: Vec<usize> = (btn_start..n).filter(|&i| self.is_focusable(i)).collect();
             if !bar.is_empty() {
-                rows.push(bar);
+                match self.button_wrap_width {
+                    Some(w) => {
+                        let widths: Vec<u16> = bar
+                            .iter()
+                            .map(|&i| match self.fields[i].kind {
+                                FieldKind::Button { label, .. } => {
+                                    crate::form::render::button_chrome_width(label)
+                                }
+                                _ => 0,
+                            })
+                            .collect();
+                        for group in crate::form::render::pack_button_rows(&widths, w) {
+                            let row: Vec<usize> = group.into_iter().map(|k| bar[k]).collect();
+                            if !row.is_empty() {
+                                rows.push(row);
+                            }
+                        }
+                    }
+                    None => rows.push(bar),
+                }
             }
         }
         rows
@@ -703,12 +747,26 @@ impl<A: Clone> FormState<A> {
             originals,
             dirty,
             enter_reach: EnterReach::default(),
+            button_wrap_width: None,
         }
     }
 
     /// Choose how far Enter reaches. See [`EnterReach`].
     pub fn with_enter_reach(mut self, reach: EnterReach) -> Self {
         self.enter_reach = reach;
+        self
+    }
+
+    /// Pin the inner width the trailing button run wraps against, so arrow-key
+    /// navigation splits the buttons into the same rows the renderer draws.
+    ///
+    /// Pass the inner width the form is rendered at
+    /// ([`Layout::inner_w`](crate::Layout::inner_w)). Without it, navigation
+    /// treats the whole button run as a single row; with it, Up/Down step
+    /// between wrapped button rows and Left/Right stay within one. See
+    /// [`button_wrap_width`](Self::button_wrap_width).
+    pub fn with_button_wrap_width(mut self, inner_w: u16) -> Self {
+        self.button_wrap_width = Some(inner_w);
         self
     }
 
@@ -1588,6 +1646,78 @@ mod tests {
         f.set_focus(4);
         f.handle(FormEvent::Down);
         assert_ne!(f.focus(), 5, "Down from OK must not land on Cancel");
+    }
+
+    /// A field plus a button run wide enough to wrap at inner_w 37:
+    /// OK(8) + Cancel(10) fit the first row, Reset to Defaults(21) wraps to the
+    /// second. Field indices: Cycling=0, OK=1, Cancel=2, Reset=3.
+    fn wrapping_bar_fields() -> Vec<Field<TestOp>> {
+        alloc::vec![
+            Field {
+                label: "Cycling",
+                kind: FieldKind::Toggle {
+                    on: false,
+                    on_action: TestOp::On,
+                    off_action: TestOp::Off,
+                },
+                restore: alloc::vec![TestOp::Off],
+            },
+            Field::button("~O~K", ButtonRole::Accept, None),
+            Field::button("~C~ancel", ButtonRole::Reject, None),
+            Field::button("Reset to Defaults", ButtonRole::Stay, Some(TestOp::On)),
+        ]
+    }
+
+    #[test]
+    fn a_pinned_wrap_width_splits_the_button_bar_into_navigable_rows() {
+        // Nav rows with the width pinned: [0], [1,2] (OK,Cancel), [3] (Reset).
+        let mut f = FormState::new("TEST", wrapping_bar_fields()).with_button_wrap_width(37);
+
+        // Left/Right stay within the OK/Cancel row and never reach Reset.
+        f.set_focus(1); // OK
+        f.handle(FormEvent::Right);
+        assert_eq!(f.focus(), 2, "Right: OK -> Cancel");
+        f.handle(FormEvent::Right);
+        assert_eq!(
+            f.focus(),
+            1,
+            "Right from Cancel wraps to OK, never to Reset"
+        );
+
+        // Up/Down step between the two button rows.
+        f.set_focus(1); // OK
+        f.handle(FormEvent::Down);
+        assert_eq!(f.focus(), 3, "Down: OK/Cancel row -> Reset row");
+        f.handle(FormEvent::Up);
+        assert_eq!(f.focus(), 1, "Up: Reset row -> OK/Cancel row at column 0");
+
+        // Reset is a single-button row: Left/Right are no-ops.
+        f.set_focus(3);
+        f.handle(FormEvent::Left);
+        assert_eq!(
+            f.focus(),
+            3,
+            "Left/Right do nothing on the single-button row"
+        );
+        f.handle(FormEvent::Right);
+        assert_eq!(f.focus(), 3, "still nothing on the single-button row");
+
+        // The field above steps down into the first button row.
+        f.set_focus(0);
+        f.handle(FormEvent::Down);
+        assert_eq!(f.focus(), 1, "Down from the field lands on OK");
+    }
+
+    #[test]
+    fn without_a_wrap_width_the_button_bar_stays_one_nav_row() {
+        // Default (no pinned width): the whole run is one nav row, so Right
+        // walks OK -> Cancel -> Reset — the historical behaviour, unchanged.
+        let mut f = FormState::new("TEST", wrapping_bar_fields());
+        f.set_focus(1); // OK
+        f.handle(FormEvent::Right);
+        assert_eq!(f.focus(), 2, "Right: OK -> Cancel");
+        f.handle(FormEvent::Right);
+        assert_eq!(f.focus(), 3, "no wrap width -> Cancel -> Reset in one row");
     }
 
     #[test]

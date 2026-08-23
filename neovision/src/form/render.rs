@@ -353,6 +353,51 @@ fn button_chrome(label: &str) -> String {
     s
 }
 
+/// Rendered width, in cells, of the chrome a button label draws as — brackets,
+/// padding and the mnemonic-stripped label. `default: true` does not change it
+/// (the guillemets replace the brackets one-for-one).
+///
+/// Shared with `FormState::focus_rows` so arrow-key navigation groups buttons
+/// into exactly the rows the renderer wraps them into: the model has no
+/// [`Layout`], so it measures button widths through this instead.
+pub(crate) fn button_chrome_width(label: &str) -> u16 {
+    button_chrome(&super::model::parse_mnemonic(label).0)
+        .chars()
+        .count() as u16
+}
+
+/// Greedily pack button `widths` into rows that each fit `inner_w`, returning
+/// the run-relative indices per row (0-based within the button run). A row
+/// takes the next button only if the running width plus a [`BUTTON_GAP`] plus
+/// the next width still fits; the first button of a row always fits (a button
+/// wider than `inner_w` gets its own row and is clipped at draw time).
+///
+/// The single source of truth for the button-row split, used by both
+/// [`button_rows`] (rendering) and `FormState::focus_rows` (navigation) so the
+/// visual rows and the arrow-key rows can never disagree.
+pub(crate) fn pack_button_rows(widths: &[u16], inner_w: u16) -> Vec<Vec<usize>> {
+    let mut rows: Vec<Vec<usize>> = Vec::new();
+    let mut cur: Vec<usize> = Vec::new();
+    let mut cur_w: u16 = 0;
+    for (i, &w) in widths.iter().enumerate() {
+        if cur.is_empty() {
+            cur.push(i);
+            cur_w = w;
+        } else if cur_w.saturating_add(BUTTON_GAP).saturating_add(w) <= inner_w {
+            cur_w = cur_w.saturating_add(BUTTON_GAP).saturating_add(w);
+            cur.push(i);
+        } else {
+            rows.push(core::mem::take(&mut cur));
+            cur = alloc::vec![i];
+            cur_w = w;
+        }
+    }
+    if !cur.is_empty() {
+        rows.push(cur);
+    }
+    rows
+}
+
 fn value_text<A>(field: &Field<A>) -> alloc::string::String {
     use alloc::string::ToString;
     match &field.kind {
@@ -449,30 +494,24 @@ fn button_rows<A>(
     button_start: usize,
     inner_w: u16,
 ) -> Vec<Vec<(usize, String)>> {
-    let mut rows: Vec<Vec<(usize, String)>> = Vec::new();
-    let mut cur: Vec<(usize, String)> = Vec::new();
-    let mut cur_w: u16 = 0;
-    for (k, f) in fields[button_start..].iter().enumerate() {
-        let is_default = matches!(f.kind, FieldKind::Button { default: true, .. });
-        let chrome = button_chrome_with(&value_text(f), is_default);
-        let w = chrome.chars().count() as u16;
-        let idx = button_start + k;
-        if cur.is_empty() {
-            cur.push((idx, chrome));
-            cur_w = w;
-        } else if cur_w.saturating_add(BUTTON_GAP).saturating_add(w) <= inner_w {
-            cur_w = cur_w.saturating_add(BUTTON_GAP).saturating_add(w);
-            cur.push((idx, chrome));
-        } else {
-            rows.push(core::mem::take(&mut cur));
-            cur_w = w;
-            cur.push((idx, chrome));
-        }
-    }
-    if !cur.is_empty() {
-        rows.push(cur);
-    }
-    rows
+    let run = &fields[button_start..];
+    let chromes: Vec<String> = run
+        .iter()
+        .map(|f| {
+            let is_default = matches!(f.kind, FieldKind::Button { default: true, .. });
+            button_chrome_with(&value_text(f), is_default)
+        })
+        .collect();
+    let widths: Vec<u16> = chromes.iter().map(|c| c.chars().count() as u16).collect();
+    pack_button_rows(&widths, inner_w)
+        .into_iter()
+        .map(|group| {
+            group
+                .into_iter()
+                .map(|k| (button_start + k, chromes[k].clone()))
+                .collect()
+        })
+        .collect()
 }
 
 /// Draw `state` into layers, bottom-to-top, plus the text-cursor descriptor
@@ -498,8 +537,14 @@ fn render_impl<A>(
     // the whole block, so the trailer is one separator plus however many button
     // rows the run wrapped into — replacing what would otherwise be one row per
     // button.
+    // A form may pin its own button-wrap width so navigation (which has no
+    // Layout) and rendering split the run identically; otherwise wrap to the
+    // panel's own inner width.
+    let wrap_w = state
+        .button_wrap_width()
+        .unwrap_or_else(|| layout.inner_w());
     let btn_rows = if has_buttons {
-        button_rows(fields, button_start, layout.inner_w())
+        button_rows(fields, button_start, wrap_w)
     } else {
         Vec::new()
     };
