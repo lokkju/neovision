@@ -4,6 +4,13 @@ All notable changes are recorded here. This file is generated from
 conventional commits by [git-cliff](https://git-cliff.org) via
 [release-plz](https://release-plz.dev).
 
+## [1.3.0] - 2026-08-23
+
+### Features
+
+- Row-aware arrow nav for a wrapped button run ([#27](https://github.com/lokkju/neovision/pull/27))
+
+
 ## [1.2.0] - 2026-08-23
 
 ### Features
