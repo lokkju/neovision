@@ -429,6 +429,52 @@ fn button_run_start<A>(fields: &[Field<A>]) -> usize {
     fields.len() - trailing
 }
 
+/// Pack the trailing button run into rows that each fit within `inner_w`,
+/// greedily left-to-right, and pre-render each button's chrome.
+///
+/// A row that already holds a button only takes another if the current width
+/// plus a [`BUTTON_GAP`] plus the next chrome still fits; otherwise the next
+/// button starts a fresh row. This is what lets a long run (e.g. a wide
+/// "Reset to Defaults" alongside "OK"/"Cancel") wrap onto a second line
+/// instead of the rightmost button being clipped off the panel edge. A single
+/// button whose chrome alone exceeds `inner_w` still gets its own row (and is
+/// left-clipped at draw time) — nothing sensible can be done when one button
+/// is wider than the whole panel.
+///
+/// Returns one entry per row, each a list of `(field_index, chrome)` in field
+/// order, so the caller can centre each row independently and still map a
+/// chrome back to its field for focus/accelerator drawing.
+fn button_rows<A>(
+    fields: &[Field<A>],
+    button_start: usize,
+    inner_w: u16,
+) -> Vec<Vec<(usize, String)>> {
+    let mut rows: Vec<Vec<(usize, String)>> = Vec::new();
+    let mut cur: Vec<(usize, String)> = Vec::new();
+    let mut cur_w: u16 = 0;
+    for (k, f) in fields[button_start..].iter().enumerate() {
+        let is_default = matches!(f.kind, FieldKind::Button { default: true, .. });
+        let chrome = button_chrome_with(&value_text(f), is_default);
+        let w = chrome.chars().count() as u16;
+        let idx = button_start + k;
+        if cur.is_empty() {
+            cur.push((idx, chrome));
+            cur_w = w;
+        } else if cur_w.saturating_add(BUTTON_GAP).saturating_add(w) <= inner_w {
+            cur_w = cur_w.saturating_add(BUTTON_GAP).saturating_add(w);
+            cur.push((idx, chrome));
+        } else {
+            rows.push(core::mem::take(&mut cur));
+            cur_w = w;
+            cur.push((idx, chrome));
+        }
+    }
+    if !cur.is_empty() {
+        rows.push(cur);
+    }
+    rows
+}
+
 /// Draw `state` into layers, bottom-to-top, plus the text-cursor descriptor
 /// (if any) for the focused field. Shared by `render` and `render_with_cursor`
 /// so the layout math (panel origin, per-row field position) is computed
@@ -447,10 +493,21 @@ fn render_impl<A>(
     let button_start = button_run_start(fields);
     let has_buttons = button_start < fields.len();
     let (offsets, field_rows) = row_offsets(fields, button_start);
-    // A collapsed button row also gets a separator rule above it, so the two
-    // extra rows (separator + button row) replace what would otherwise be
-    // one row per button.
-    let trailer_rows = if has_buttons { 2 } else { 0 };
+    // The trailing button run collapses onto shared rows, wrapping when a row
+    // would overflow the panel (see `button_rows`). A separator rule sits above
+    // the whole block, so the trailer is one separator plus however many button
+    // rows the run wrapped into — replacing what would otherwise be one row per
+    // button.
+    let btn_rows = if has_buttons {
+        button_rows(fields, button_start, layout.inner_w())
+    } else {
+        Vec::new()
+    };
+    let trailer_rows = if has_buttons {
+        1 + btn_rows.len() as u16
+    } else {
+        0
+    };
     let panel_h = field_rows + trailer_rows + 2;
     let panel = centred(Size::new(layout.inner_w() + 2, panel_h), screen);
 
@@ -647,75 +704,70 @@ fn render_impl<A>(
             },
         );
 
-        // Button row background, plain — only the focused button's own
-        // chrome (not the row) gets the selected attribute.
-        body.fill(
-            Rect::new(1, btn_row, layout.inner_w(), 1),
-            LayerCell::Opaque(Cell {
-                ch: b' ',
-                attr: theme.normal,
-            }),
-        );
-
-        let chromes: Vec<(usize, String)> = fields[button_start..]
-            .iter()
-            .enumerate()
-            .map(|(k, f)| {
-                let is_default = matches!(f.kind, FieldKind::Button { default: true, .. });
-                (
-                    button_start + k,
-                    button_chrome_with(&value_text(f), is_default),
-                )
-            })
-            .collect();
         let gap = BUTTON_GAP;
-        let total_w: u16 = chromes
-            .iter()
-            .map(|(_, s)| s.chars().count() as u16)
-            .sum::<u16>()
-            + gap.saturating_mul(chromes.len().saturating_sub(1) as u16);
-        let mut x = 1 + (layout.inner_w().saturating_sub(total_w)) / 2;
-        for (idx, chrome) in &chromes {
-            // The focused button's *whole* chrome (brackets and padding, not
-            // just the label) carries the selected attribute. Highlighting the
-            // label alone reads as broken chrome rather than as focus.
-            let attr = if *idx == state.focus() {
-                theme.selected
-            } else {
-                theme.normal
-            };
-            body.write_str(Point::new(x, btn_row), chrome, attr);
+        // Each wrapped row is painted and centred independently, one panel row
+        // below the last, starting just under the separator.
+        for (row_ix, row) in btn_rows.iter().enumerate() {
+            let y = btn_row + row_ix as u16;
 
-            // A button's accelerator is marked in its own label. Its column
-            // inside the chrome is the opening bracket plus the left padding
-            // plus its index in the label — computed rather than searched, so
-            // a label whose accelerator letter also appears earlier in it
-            // still marks the right cell.
-            if let (Some(hot), Some(FieldKind::Button { label, .. })) =
-                (theme.hotkey, fields.get(*idx).map(|f| &f.kind))
-            {
-                let (text, mnemonic) = parse_mnemonic(label);
-                if let Some((wanted, idx_in_label)) = mnemonic {
-                    let len = text.chars().count() as u16;
-                    let inner_w = (len + 2).max(BUTTON_MIN_INNER);
-                    let offset = 1 + (inner_w - len) / 2 + idx_in_label as u16;
-                    let hot_attr = if *idx == state.focus() {
-                        hot.selected
-                    } else {
-                        hot.normal
-                    };
-                    body.put(
-                        x.saturating_add(offset),
-                        btn_row,
-                        Cell {
-                            ch: cp437_byte(wanted),
-                            attr: hot_attr,
-                        },
-                    );
+            // Button row background, plain — only the focused button's own
+            // chrome (not the row) gets the selected attribute.
+            body.fill(
+                Rect::new(1, y, layout.inner_w(), 1),
+                LayerCell::Opaque(Cell {
+                    ch: b' ',
+                    attr: theme.normal,
+                }),
+            );
+
+            let total_w: u16 = row
+                .iter()
+                .map(|(_, s)| s.chars().count() as u16)
+                .sum::<u16>()
+                + gap.saturating_mul(row.len().saturating_sub(1) as u16);
+            let mut x = 1 + (layout.inner_w().saturating_sub(total_w)) / 2;
+            for (idx, chrome) in row {
+                // The focused button's *whole* chrome (brackets and padding, not
+                // just the label) carries the selected attribute. Highlighting the
+                // label alone reads as broken chrome rather than as focus.
+                let attr = if *idx == state.focus() {
+                    theme.selected
+                } else {
+                    theme.normal
+                };
+                body.write_str(Point::new(x, y), chrome, attr);
+
+                // A button's accelerator is marked in its own label. Its column
+                // inside the chrome is the opening bracket plus the left padding
+                // plus its index in the label — computed rather than searched, so
+                // a label whose accelerator letter also appears earlier in it
+                // still marks the right cell.
+                if let (Some(hot), Some(FieldKind::Button { label, .. })) =
+                    (theme.hotkey, fields.get(*idx).map(|f| &f.kind))
+                {
+                    let (text, mnemonic) = parse_mnemonic(label);
+                    if let Some((wanted, idx_in_label)) = mnemonic {
+                        let len = text.chars().count() as u16;
+                        let inner_w = (len + 2).max(BUTTON_MIN_INNER);
+                        let offset = 1 + (inner_w - len) / 2 + idx_in_label as u16;
+                        let hot_attr = if *idx == state.focus() {
+                            hot.selected
+                        } else {
+                            hot.normal
+                        };
+                        body.put(
+                            x.saturating_add(offset),
+                            y,
+                            Cell {
+                                ch: cp437_byte(wanted),
+                                attr: hot_attr,
+                            },
+                        );
+                    }
                 }
-            }
 
-            x = x.saturating_add(chrome.chars().count() as u16 + gap);
+                x = x.saturating_add(chrome.chars().count() as u16 + gap);
+            }
         }
     }
 
@@ -1139,6 +1191,73 @@ mod tests {
         let hot = Theme::DEFAULT.hotkey.expect("default marks hotkeys");
         // The OK button is not focused here, so it takes the normal variant.
         assert_eq!(buf.get(o_at, row).attr, hot.normal);
+    }
+
+    /// A trailing button run too wide for one row at `Layout::DEFAULT`
+    /// (inner_w 37): `[  OK  ]` + `[ Cancel ]` fit together, but
+    /// `[ Reset to Defaults ]` cannot join them. Ordered OK, Cancel, Reset so
+    /// the greedy pack lands the short pair on the first row and the wide
+    /// button alone on the second — HHFe's settings form.
+    fn wrapping_button_form() -> FormState<TestOp> {
+        let btn = |label: &'static str, role| Field {
+            label: "",
+            kind: FieldKind::Button {
+                label,
+                role,
+                action: None,
+                default: false,
+            },
+            restore: Vec::new(),
+        };
+        FormState::new(
+            "SETTINGS",
+            alloc::vec![
+                Field {
+                    label: "Strategy",
+                    kind: FieldKind::ReadOnly("Fixed".to_string()),
+                    restore: Vec::new(),
+                },
+                btn("OK", ButtonRole::Accept),
+                btn("Cancel", ButtonRole::Reject),
+                btn("Reset to Defaults", ButtonRole::Stay),
+            ],
+        )
+    }
+
+    #[test]
+    fn an_overflowing_button_run_wraps_instead_of_clipping() {
+        let screen = Size::new(80, 25);
+        let buf = flatten(render(&wrapping_button_form(), screen), screen);
+
+        let ok_row = find_row(&buf, "OK").expect("OK row");
+        let cancel_row = find_row(&buf, "Cancel").expect("Cancel row");
+        let reset_row = find_row(&buf, "Reset to Defaults").expect("Reset row");
+
+        // OK and Cancel share one row; Reset to Defaults wraps to the next.
+        assert_eq!(ok_row, cancel_row, "OK and Cancel stay on one row");
+        assert_eq!(
+            reset_row,
+            ok_row + 1,
+            "the wide button wraps to the row below, not clipped off the edge"
+        );
+
+        // Cancel is fully present — its closing 'l' is on-screen, which is the
+        // regression this guards (it used to be pushed past the panel edge).
+        let text = row_text(&buf, cancel_row);
+        assert!(
+            text.contains("Cancel"),
+            "Cancel renders in full on the shared row: {text:?}"
+        );
+    }
+
+    #[test]
+    fn a_button_run_that_fits_stays_on_one_row() {
+        // Guard the common case: OK + Cancel alone must NOT wrap.
+        let screen = Size::new(80, 25);
+        let buf = flatten(render(&form(), screen), screen);
+        let ok_row = find_row(&buf, "OK").expect("OK row");
+        let cancel_row = find_row(&buf, "Cancel").expect("Cancel row");
+        assert_eq!(ok_row, cancel_row, "a run that fits stays on a single row");
     }
 
     #[test]
