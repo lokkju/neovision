@@ -4,6 +4,14 @@ All notable changes are recorded here. This file is generated from
 conventional commits by [git-cliff](https://git-cliff.org) via
 [release-plz](https://release-plz.dev).
 
+## [1.2.0] - 2026-08-23
+
+### Features
+
+- Wrap an overflowing button row instead of clipping it ([#26](https://github.com/lokkju/neovision/pull/26))
+- Add --card and --social outputs
+
+
 ## [1.1.0] - 2026-07-31
 
 ### Bug Fixes
