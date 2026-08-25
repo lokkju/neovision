@@ -7,7 +7,10 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use super::model::{parse_mnemonic, ClusterItem, ClusterStyle, Field, FieldKind, FormState, Popup};
+use super::model::{
+    decimal_max_len, format_decimal, parse_mnemonic, ClusterItem, ClusterStyle, Field, FieldKind,
+    FormState, Popup,
+};
 // Only the test module's `use super::*` needs these; the renderer itself
 // never constructs a `ChoiceOption` or feeds a `FormEvent`.
 #[cfg(test)]
@@ -293,6 +296,30 @@ fn value_column<A>(field: &Field<A>, focused: bool, layout: Layout) -> String {
             let s = alloc::format!("[{:<4} ]{unit} ({min}-{max})", digits);
             fit(&s, layout.value_w as usize)
         }
+        FieldKind::Decimal {
+            value,
+            buffer,
+            unit,
+            min,
+            max,
+            decimals,
+            ..
+        } => {
+            // Same live-buffer-wins-while-focused rule as `Number` above: a
+            // focused, emptied buffer must render genuinely empty rather than
+            // falling back to the stale committed `value`.
+            let digits = if buffer.is_empty() && !focused {
+                format_decimal(*value, *decimals)
+            } else {
+                buffer.clone()
+            };
+            // Fixed-width digit slot sized to the widest legal entry (rather
+            // than `Number`'s constant 4), so `]`, the unit and the range
+            // never shift as digits are typed.
+            let w = decimal_max_len(*max, *decimals);
+            let s = alloc::format!("[{digits:<w$} ]{unit} ({min}-{max})");
+            fit(&s, layout.value_w as usize)
+        }
         FieldKind::Text { buffer, cursor, .. } => {
             let visible = layout.text_visible_w() as usize;
             let first = text_scroll(*cursor, layout);
@@ -413,6 +440,19 @@ fn value_text<A>(field: &Field<A>) -> alloc::string::String {
         } => {
             if buffer.is_empty() {
                 alloc::format!("{value}{unit}")
+            } else {
+                alloc::format!("{buffer}{unit}")
+            }
+        }
+        FieldKind::Decimal {
+            value,
+            buffer,
+            unit,
+            decimals,
+            ..
+        } => {
+            if buffer.is_empty() {
+                alloc::format!("{}{unit}", format_decimal(*value, *decimals))
             } else {
                 alloc::format!("{buffer}{unit}")
             }
@@ -648,6 +688,11 @@ fn render_impl<A>(
                     buffer,
                     selected: true,
                     ..
+                }
+                | FieldKind::Decimal {
+                    buffer,
+                    selected: true,
+                    ..
                 } => Some(buffer.clone()),
                 FieldKind::Text {
                     buffer,
@@ -688,6 +733,12 @@ fn render_impl<A>(
         if focused {
             let entry = match &field.kind {
                 FieldKind::Number {
+                    cursor,
+                    selected,
+                    overtype,
+                    ..
+                }
+                | FieldKind::Decimal {
                     cursor,
                     selected,
                     overtype,

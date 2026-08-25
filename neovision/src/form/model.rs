@@ -134,13 +134,32 @@ fn mnemonic_of(label: &str) -> Option<char> {
     parse_mnemonic(label).1.map(|(c, _)| c)
 }
 
+/// What characters an entry field's [`EditRef::type_char`] accepts.
+///
+/// Generalises the old `digits_only: bool` so a third shape — digits plus at
+/// most one `.` — can be expressed without a separate boolean that would only
+/// make sense for one field kind. [`FieldKind::Text`] uses `Any`,
+/// [`FieldKind::Number`] uses `Digits`, and [`FieldKind::Decimal`] uses
+/// `Decimal`; `Text` and `Number` keep exactly their prior behaviour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EntryFilter {
+    /// Every character is accepted. [`FieldKind::Text`].
+    Any,
+    /// Only ASCII digits. [`FieldKind::Number`].
+    Digits,
+    /// ASCII digits, plus a single `.` when `allow_dot` is set — `false` when
+    /// the field's `decimals` is `0`, since a whole-number entry has nothing
+    /// for a fractional point to separate. [`FieldKind::Decimal`].
+    Decimal { allow_dot: bool },
+}
+
 /// A borrowed view of whatever entry field currently has focus.
 ///
-/// Both [`FieldKind::Text`] and [`FieldKind::Number`] are entry fields: they
-/// hold a buffer, a caret, a whole-value selection and an insert/overtype
-/// mode, and they respond to typing identically apart from what they accept
-/// and how long they may get. Turbo Vision drew the same line — numeric entry
-/// was a validated `TInputLine`, not a separate control.
+/// [`FieldKind::Text`], [`FieldKind::Number`] and [`FieldKind::Decimal`] are
+/// entry fields: they hold a buffer, a caret, a whole-value selection and an
+/// insert/overtype mode, and they respond to typing identically apart from
+/// what they accept and how long they may get. Turbo Vision drew the same
+/// line — numeric entry was a validated `TInputLine`, not a separate control.
 ///
 /// Borrowing them into one shape means the editing state machine is written
 /// and tested once instead of once per field kind.
@@ -153,8 +172,8 @@ struct EditRef<'a> {
     overtype: &'a mut bool,
     /// Longest the buffer may become, in characters.
     max_len: usize,
-    /// Whether the field takes only ASCII digits.
-    digits_only: bool,
+    /// What [`Self::type_char`] accepts.
+    filter: EntryFilter,
 }
 
 impl EditRef<'_> {
@@ -173,7 +192,14 @@ impl EditRef<'_> {
     }
 
     fn type_char(&mut self, c: char) {
-        if self.digits_only && !c.is_ascii_digit() {
+        let accept = match self.filter {
+            EntryFilter::Any => true,
+            EntryFilter::Digits => c.is_ascii_digit(),
+            EntryFilter::Decimal { allow_dot } => {
+                c.is_ascii_digit() || (allow_dot && c == '.' && !self.buffer.contains('.'))
+            }
+        };
+        if !accept {
             return;
         }
         if *self.selected {
@@ -263,6 +289,64 @@ impl EditRef<'_> {
     }
 }
 
+/// Format `value` to `decimals` fractional digits, then trim trailing zeros
+/// and a trailing `.` — so `120.0` with `decimals: 1` renders `"120"` and
+/// `12.50` with `decimals: 2` renders `"12.5"`.
+///
+/// Used both to seed a [`FieldKind::Decimal`]'s buffer/display from its
+/// current value and, by the renderer, to show it when unfocused.
+///
+/// `decimals == 0` returns the plain formatted integer untrimmed: `"{:.0}"`
+/// never contains a `.`, so trimming trailing `'0'` characters in that case
+/// would eat significant digits (`120` would become `12`).
+pub(crate) fn format_decimal(value: f32, decimals: u8) -> String {
+    let s = alloc::format!("{:.*}", decimals as usize, value);
+    if decimals == 0 {
+        return s;
+    }
+    s.trim_end_matches('0').trim_end_matches('.').into()
+}
+
+/// `10^decimals` as an `f32`.
+///
+/// `core` has no floating-point `powi`/`round` without `libm`, and this crate
+/// has no other use for either — pulling in a dependency for one call site
+/// (rounding a committed [`FieldKind::Decimal`] value) is not worth it when
+/// `decimals` is always a small field-configured constant. A short
+/// multiplication loop is simpler than the dependency.
+fn pow10(decimals: u8) -> f32 {
+    let mut step = 1.0f32;
+    for _ in 0..decimals {
+        step *= 10.0;
+    }
+    step
+}
+
+/// Round to the nearest integer, ties away from zero — see [`pow10`] for why
+/// this is hand-rolled rather than `f32::round`. Float-to-int casts in Rust
+/// saturate rather than overflow, so this is well-defined even outside
+/// `i32`'s range; the magnitudes a form field deals in never approach it.
+fn round_half_away_from_zero(x: f32) -> f32 {
+    if x >= 0.0 {
+        (x + 0.5) as i32 as f32
+    } else {
+        (x - 0.5) as i32 as f32
+    }
+}
+
+/// The character width of the widest legal [`FieldKind::Decimal`] entry:
+/// `max` formatted to `decimals` places, untrimmed (e.g. `max: 3600.0`,
+/// `decimals: 1` -> `"3600.0"` -> `6`).
+///
+/// Untrimmed on purpose — this sizes the fixed digit slot the renderer
+/// reserves and the buffer's typing cap, both of which must accommodate the
+/// longest possible entry, not the shortest way of writing it.
+pub(crate) fn decimal_max_len(max: f32, decimals: u8) -> usize {
+    alloc::format!("{:.*}", decimals as usize, max)
+        .chars()
+        .count()
+}
+
 /// What a field is and how it behaves.
 ///
 /// Marked non-exhaustive: new field kinds are expected, and a consumer's
@@ -302,6 +386,39 @@ pub enum FieldKind<A> {
         max: u32,
         unit: &'static str,
         commit: fn(u32) -> A,
+    },
+    /// Bounded fractional entry. Digits plus a single `.` buffer; Enter
+    /// parses as `f32`, clamps to `[min, max]`, rounds to `decimals` places,
+    /// and commits.
+    ///
+    /// [`FieldKind::Number`]'s integer-only parse (`u32`, ASCII digits) can't
+    /// express a value like "12.5 seconds", which is what this exists for.
+    /// Everything else about it mirrors `Number`: whole-value selection on
+    /// entry, insert/overtype, Home/End/Delete/Backspace. See
+    /// [`EntryFilter::Decimal`] for the typing rule and
+    /// [`format_decimal`] for the display/seed formatting.
+    Decimal {
+        value: f32,
+        /// The live digit-and-dot string: seeded from `value` and edited in
+        /// place.
+        buffer: String,
+        /// Insertion point within `buffer`, in `0..=buffer.chars().count()`.
+        cursor: usize,
+        /// Whole-value selection (Turbo Vision "selected on entry"). While
+        /// set, the first character typed replaces the buffer; any
+        /// navigation/edit key clears it and drops into in-place editing.
+        selected: bool,
+        /// `false` = insert (default), `true` = overtype.
+        overtype: bool,
+        min: f32,
+        max: f32,
+        /// Max fractional digits displayed and accepted. A `.` is only
+        /// accepted while typing when this is greater than `0`; a
+        /// whole-number bound (`decimals: 0`) has nothing for a point to
+        /// separate.
+        decimals: u8,
+        unit: &'static str,
+        commit: fn(f32) -> A,
     },
     /// Free text entry — the analogue of Turbo Vision's `TInputLine`.
     ///
@@ -1116,7 +1233,9 @@ impl<A: Clone> FormState<A> {
     fn focused_is_entry(&self) -> bool {
         matches!(
             self.fields.get(self.focus).map(|f| &f.kind),
-            Some(FieldKind::Number { .. }) | Some(FieldKind::Text { .. })
+            Some(FieldKind::Number { .. })
+                | Some(FieldKind::Decimal { .. })
+                | Some(FieldKind::Text { .. })
         )
     }
 
@@ -1136,8 +1255,40 @@ impl<A: Clone> FormState<A> {
                 overtype,
                 // The digit slot the renderer reserves is four wide.
                 max_len: 4,
-                digits_only: true,
+                filter: EntryFilter::Digits,
             }),
+            FieldKind::Decimal {
+                buffer,
+                cursor,
+                selected,
+                overtype,
+                max,
+                decimals,
+                ..
+            } => {
+                // `buffer` is not re-seeded from `value` here, even though it
+                // starts empty on a freshly built field: `focused_edit` is
+                // called on *every* keystroke (`type_char`, `backspace`, …),
+                // so unconditionally reformatting from `value` would stomp
+                // whatever the user has typed so far, and reformatting only
+                // "when empty" would resurrect a value the user just cleared
+                // on their very next keystroke. A caller wanting an
+                // already-populated buffer should seed it at construction
+                // time with [`format_decimal`], exactly as `Number` fields
+                // are seeded with `alloc::format!("{value}")` today.
+                let decimals = *decimals;
+                let max_len = decimal_max_len(*max, decimals);
+                Some(EditRef {
+                    buffer,
+                    cursor,
+                    selected,
+                    overtype,
+                    max_len,
+                    filter: EntryFilter::Decimal {
+                        allow_dot: decimals > 0,
+                    },
+                })
+            }
             FieldKind::Text {
                 buffer,
                 cursor,
@@ -1153,7 +1304,7 @@ impl<A: Clone> FormState<A> {
                     selected,
                     overtype,
                     max_len,
-                    digits_only: false,
+                    filter: EntryFilter::Any,
                 })
             }
             _ => None,
@@ -1307,6 +1458,35 @@ impl<A: Clone> FormState<A> {
                     alloc::vec![commit(clamped)]
                 }
             }
+            Some(FieldKind::Decimal {
+                value,
+                buffer,
+                cursor,
+                selected,
+                min,
+                max,
+                decimals,
+                commit,
+                ..
+            }) => {
+                let Ok(parsed) = buffer.parse::<f32>() else {
+                    return Vec::new();
+                };
+                let clamped = parsed.clamp(*min, *max);
+                let step = pow10(*decimals);
+                let rounded = round_half_away_from_zero(clamped * step) / step;
+                // Normalise the live buffer to the rounded value either way.
+                *buffer = format_decimal(rounded, *decimals);
+                *cursor = buffer.chars().count();
+                *selected = false;
+                if rounded == *value {
+                    Vec::new()
+                } else {
+                    *value = rounded;
+                    changed = true;
+                    alloc::vec![commit(rounded)]
+                }
+            }
             _ => Vec::new(),
         };
         if changed {
@@ -1366,7 +1546,9 @@ impl<A: Clone> FormState<A> {
             Some(FieldKind::Cluster { .. }) => {
                 self.cluster_activate().unwrap_or_else(FormOutcome::nothing)
             }
-            Some(FieldKind::Text { .. }) | Some(FieldKind::Number { .. }) => {
+            Some(FieldKind::Text { .. })
+            | Some(FieldKind::Number { .. })
+            | Some(FieldKind::Decimal { .. }) => {
                 let committed = self.commit_entry();
                 if self.enter_reach == EnterReach::OperateOnly {
                     // Commit the value, but stop there: this form does not
@@ -1415,7 +1597,8 @@ impl<A: Clone> FormState<A> {
             Some(FieldKind::Cluster { .. }) => {
                 self.cluster_activate().unwrap_or_else(FormOutcome::nothing)
             }
-            // Text takes a literal space; Number ignores it.
+            // Text takes a literal space; Number and Decimal ignore it (their
+            // filters reject a space just like any other non-digit).
             _ => {
                 self.type_char(' ');
                 FormOutcome::nothing()
@@ -1525,12 +1708,17 @@ mod tests {
     /// A dummy action type, declared locally on purpose. If the model ever
     /// grows a dependency on some consuming application's action enum, these
     /// tests stop compiling — which is the point.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    // `Eq` dropped (rather than derived alongside `PartialEq` as it used to
+    // be): `Frac(f32)` below has no total equality, and `assert_eq!` on a
+    // `Vec<TestOp>` only ever needs `PartialEq` + `Debug`, both still derived.
+    #[derive(Debug, Clone, Copy, PartialEq)]
     enum TestOp {
         SetColor(u8),
         On,
         Off,
         Period(u32),
+        /// Used only by the Decimal edit-state/commit tests below.
+        Frac(f32),
         /// Used only by the Number edit-state tests below, which don't care
         /// which action `commit` returns — just that one was returned.
         A,
@@ -1538,6 +1726,10 @@ mod tests {
 
     fn period(v: u32) -> TestOp {
         TestOp::Period(v)
+    }
+
+    fn frac(v: f32) -> TestOp {
+        TestOp::Frac(v)
     }
 
     fn choice(label: &str, n: u8) -> ChoiceOption<TestOp> {
@@ -3203,6 +3395,291 @@ mod tests {
         f.handle(FormEvent::End); // cursor -> 3 (end)
         f.handle(FormEvent::Delete); // no-op: nothing after the last digit
         assert_eq!(buf(&f), ("120", 3, false, false));
+    }
+
+    // --- FieldKind::Decimal ---------------------------------------------
+
+    /// A single-field form with a fresh, unfocused-looking Decimal (empty
+    /// buffer, not selected) so typing starts from scratch — the analogue of
+    /// the `Period` field in `fields()`, used by `number_accepts_digits_...`.
+    fn dec_fresh() -> FormState<TestOp> {
+        dec_with(0.0, 0.0, 3600.0, 1)
+    }
+
+    fn dec_with(value: f32, min: f32, max: f32, decimals: u8) -> FormState<TestOp> {
+        let mut f = FormState::new(
+            "T",
+            alloc::vec![
+                Field {
+                    label: "D",
+                    kind: FieldKind::Decimal {
+                        value,
+                        buffer: String::new(),
+                        cursor: 0,
+                        selected: false,
+                        overtype: false,
+                        min,
+                        max,
+                        decimals,
+                        unit: "s",
+                        commit: frac,
+                    },
+                    restore: alloc::vec![TestOp::A],
+                },
+                Field {
+                    label: "",
+                    kind: FieldKind::Button {
+                        label: "~O~K",
+                        role: ButtonRole::Accept,
+                        action: None,
+                        default: true,
+                    },
+                    restore: Vec::new(),
+                },
+            ],
+        );
+        f.set_focus(0);
+        f
+    }
+
+    /// (buffer, cursor, selected, overtype) of field 0, which must be a
+    /// Decimal.
+    fn dbuf(f: &FormState<TestOp>) -> (&str, usize, bool, bool) {
+        match &f.fields()[0].kind {
+            FieldKind::Decimal {
+                buffer,
+                cursor,
+                selected,
+                overtype,
+                ..
+            } => (buffer.as_str(), *cursor, *selected, *overtype),
+            _ => panic!("field 0 is a Decimal"),
+        }
+    }
+
+    /// Extracts the single `Frac` action an outcome carries, panicking with
+    /// the actual actions otherwise — float equality is exact only because
+    /// both sides of every assertion below go through the same rounding path,
+    /// so a plain `assert_eq!` is fine and gives a clearer failure than an
+    /// epsilon comparison would.
+    fn frac_of(out: &FormOutcome<TestOp>) -> f32 {
+        match out.actions.as_slice() {
+            [TestOp::Frac(v)] => *v,
+            other => panic!("expected exactly one Frac action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decimal_types_a_value_and_commits_it_on_enter() {
+        let mut f = dec_fresh();
+        for c in ['1', '2', '.', '5'] {
+            f.handle(FormEvent::Char(c));
+        }
+        assert_eq!(dbuf(&f).0, "12.5");
+        let out = f.handle(FormEvent::Enter);
+        assert_eq!(frac_of(&out), 12.5);
+    }
+
+    #[test]
+    fn decimal_rejects_a_second_dot() {
+        let mut f = dec_fresh();
+        for c in ['1', '.', '2', '.', '5'] {
+            f.handle(FormEvent::Char(c));
+        }
+        assert_eq!(dbuf(&f).0, "1.25", "the second '.' is dropped");
+    }
+
+    #[test]
+    fn decimal_rejects_non_digit_non_dot_characters() {
+        let mut f = dec_fresh();
+        for c in ['1', 'x', '2', '!', ' '] {
+            f.handle(FormEvent::Char(c));
+        }
+        assert_eq!(dbuf(&f).0, "12");
+    }
+
+    #[test]
+    fn decimal_with_zero_decimals_rejects_the_dot() {
+        let mut f = dec_with(0.0, 0.0, 3600.0, 0);
+        for c in ['1', '.', '2'] {
+            f.handle(FormEvent::Char(c));
+        }
+        assert_eq!(dbuf(&f).0, "12", "no fractional digits means no '.'");
+        let out = f.handle(FormEvent::Enter);
+        assert_eq!(frac_of(&out), 12.0);
+    }
+
+    #[test]
+    fn decimal_clamps_a_value_above_max() {
+        let mut f = dec_fresh(); // max 3600.0
+        for c in ['9', '9', '9', '9', '9'] {
+            f.handle(FormEvent::Char(c));
+        }
+        let out = f.handle(FormEvent::Enter);
+        assert_eq!(frac_of(&out), 3600.0);
+    }
+
+    #[test]
+    fn decimal_clamps_a_value_below_min() {
+        // Starting value (500.0) deliberately differs from the clamped
+        // result (10.0): a value equal to the clamp result would emit
+        // nothing, since `commit_entry` only reports a genuine change (see
+        // `enter_unchanged_value_does_not_dirty_or_emit`'s Number analogue).
+        let mut f = dec_with(500.0, 10.0, 3600.0, 1);
+        f.handle(FormEvent::Char('5'));
+        let out = f.handle(FormEvent::Enter);
+        assert_eq!(frac_of(&out), 10.0, "5 clamps up to min");
+    }
+
+    #[test]
+    fn decimal_rounds_to_the_configured_decimals() {
+        let mut f = dec_fresh(); // decimals: 1
+        for c in ['1', '2', '.', '5', '6'] {
+            f.handle(FormEvent::Char(c));
+        }
+        let out = f.handle(FormEvent::Enter);
+        assert_eq!(frac_of(&out), 12.6, "12.56 rounds to one decimal place");
+    }
+
+    #[test]
+    fn decimal_with_an_empty_buffer_commits_nothing() {
+        let mut f = dec_fresh();
+        let out = f.handle(FormEvent::Enter);
+        assert!(out.actions.is_empty(), "nothing typed, nothing committed");
+    }
+
+    #[test]
+    fn decimal_with_an_unparseable_buffer_commits_nothing_and_keeps_the_value() {
+        // A lone '.' is legal to *type* (decimals > 0) but does not parse as
+        // an f32, so it must behave exactly like Number's unparseable path:
+        // no commit, current value untouched.
+        let mut f = dec_with(5.0, 0.0, 3600.0, 1);
+        f.handle(FormEvent::Char('.'));
+        let out = f.handle(FormEvent::Enter);
+        assert!(out.actions.is_empty());
+        match &f.fields()[0].kind {
+            FieldKind::Decimal { value, .. } => assert_eq!(*value, 5.0),
+            _ => panic!("expected Decimal"),
+        }
+    }
+
+    #[test]
+    fn decimal_selected_then_digit_replaces_whole_value() {
+        // Buffer pre-seeded with "12.5", exactly as a host would seed an
+        // already-populated field (mirroring
+        // `a_seeded_number_field_replaces_its_value_on_the_first_digit`).
+        let mut f = FormState::new(
+            "T",
+            alloc::vec![
+                Field {
+                    label: "D",
+                    kind: FieldKind::Decimal {
+                        value: 12.5,
+                        buffer: "12.5".to_string(),
+                        cursor: 4,
+                        selected: true,
+                        overtype: false,
+                        min: 0.0,
+                        max: 3600.0,
+                        decimals: 1,
+                        unit: "s",
+                        commit: frac,
+                    },
+                    restore: alloc::vec![TestOp::A],
+                },
+                Field {
+                    label: "",
+                    kind: FieldKind::Button {
+                        label: "~O~K",
+                        role: ButtonRole::Accept,
+                        action: None,
+                        default: true,
+                    },
+                    restore: Vec::new(),
+                },
+            ],
+        );
+        f.set_focus(0);
+        f.handle(FormEvent::Char('5'));
+        assert_eq!(dbuf(&f), ("5", 1, false, false));
+    }
+
+    #[test]
+    fn decimal_backspace_and_delete_edit_in_place() {
+        let mut f = dec_fresh();
+        for c in ['1', '2', '.', '5'] {
+            f.handle(FormEvent::Char(c));
+        }
+        f.handle(FormEvent::Backspace); // "12."
+        assert_eq!(dbuf(&f).0, "12.");
+        f.handle(FormEvent::Home);
+        f.handle(FormEvent::Delete); // remove '1' -> "2."
+        assert_eq!(dbuf(&f).0, "2.");
+    }
+
+    #[test]
+    fn decimal_overtype_replaces_the_character_under_the_cursor() {
+        let mut f = dec_fresh();
+        for c in ['1', '2', '5'] {
+            f.handle(FormEvent::Char(c));
+        }
+        f.handle(FormEvent::Insert); // overtype on
+        assert!(dbuf(&f).3);
+        f.handle(FormEvent::Home);
+        f.handle(FormEvent::Char('9')); // replace '1' -> "925"
+        assert_eq!(dbuf(&f), ("925", 1, false, true));
+    }
+
+    #[test]
+    fn decimal_caps_the_buffer_at_the_widest_legal_entry() {
+        // max 3600.0, decimals 1 -> widest legal entry is "3600.0" (6 chars).
+        let mut f = dec_fresh();
+        for c in ['1', '2', '3', '4', '5', '6', '7'] {
+            f.handle(FormEvent::Char(c));
+        }
+        assert_eq!(dbuf(&f).0, "123456", "capped at 6 characters");
+    }
+
+    #[test]
+    fn tabbing_back_onto_a_decimal_reselects_it() {
+        let mut f = dec_fresh();
+        f.handle(FormEvent::Char('1'));
+        f.handle(FormEvent::Left); // deselect
+        assert!(!dbuf(&f).2);
+        f.handle(FormEvent::Tab); // -> OK
+        f.handle(FormEvent::BackTab); // back onto the Decimal
+        assert!(dbuf(&f).2, "re-entering re-selects the whole value");
+    }
+
+    #[test]
+    fn format_decimal_trims_trailing_zeros_and_dot() {
+        assert_eq!(format_decimal(120.0, 1), "120");
+        assert_eq!(format_decimal(12.50, 2), "12.5");
+        assert_eq!(format_decimal(12.0, 0), "12");
+        assert_eq!(format_decimal(0.0, 2), "0");
+        assert_eq!(
+            format_decimal(12.34, 2),
+            "12.34",
+            "no trailing zeros to trim"
+        );
+    }
+
+    #[test]
+    fn number_and_text_are_unaffected_by_the_entry_filter_generalization() {
+        // Number: '.' is still just an ordinary rejected non-digit — a
+        // rejected keystroke leaves the field exactly as it was.
+        let mut n = num();
+        n.handle(FormEvent::Char('.'));
+        assert_eq!(
+            buf(&n),
+            ("120", 3, true, false),
+            "Number must still reject '.' outright, leaving state untouched"
+        );
+
+        // Text: '.' is a completely ordinary character, exactly as before.
+        let mut t = text_form("", 16);
+        t.handle(FormEvent::Char('.'));
+        assert_eq!(text_of(&t).0, ".");
     }
 
     #[test]
