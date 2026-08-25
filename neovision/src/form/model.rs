@@ -852,9 +852,7 @@ impl<A: Clone> FormState<A> {
     /// them) or capture an open-time snapshot and handle restore itself. Do not
     /// assume `mark_all_dirty()` + Cancel resolves ordering; it does not.
     pub fn mark_all_dirty(&mut self) {
-        for d in &mut self.dirty {
-            *d = true;
-        }
+        self.dirty.fill(true);
     }
 
     /// Feed one event. Returns the actions to apply and whether to close.
