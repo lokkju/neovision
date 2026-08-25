@@ -4,6 +4,13 @@ All notable changes are recorded here. This file is generated from
 conventional commits by [git-cliff](https://git-cliff.org) via
 [release-plz](https://release-plz.dev).
 
+## [1.4.0] - 2026-08-25
+
+### Features
+
+- Mark_all_dirty + closed_via close-kind signal ([#29](https://github.com/lokkju/neovision/pull/29))
+
+
 ## [1.3.0] - 2026-08-23
 
 ### Features
