@@ -394,9 +394,10 @@ pub enum FieldKind<A> {
     /// [`FieldKind::Number`]'s integer-only parse (`u32`, ASCII digits) can't
     /// express a value like "12.5 seconds", which is what this exists for.
     /// Everything else about it mirrors `Number`: whole-value selection on
-    /// entry, insert/overtype, Home/End/Delete/Backspace. See
-    /// [`EntryFilter::Decimal`] for the typing rule and
-    /// [`format_decimal`] for the display/seed formatting.
+    /// entry, insert/overtype, Home/End/Delete/Backspace. The typing rule
+    /// (digits plus a single `.`) and the display/seed formatting are handled
+    /// internally (`EntryFilter::Decimal` and `format_decimal`) — both private,
+    /// so they are named here as plain text rather than doc links.
     Decimal {
         value: f32,
         /// The live digit-and-dot string: seeded from `value` and edited in
