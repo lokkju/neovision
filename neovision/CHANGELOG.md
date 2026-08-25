@@ -4,6 +4,13 @@ All notable changes are recorded here. This file is generated from
 conventional commits by [git-cliff](https://git-cliff.org) via
 [release-plz](https://release-plz.dev).
 
+## [1.5.0] - 2026-08-25
+
+### Features
+
+- Add FieldKind::Decimal for bounded fractional entry ([#31](https://github.com/lokkju/neovision/pull/31))
+
+
 ## [1.4.0] - 2026-08-25
 
 ### Features
