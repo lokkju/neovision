@@ -521,6 +521,14 @@ pub struct FormOutcome<A> {
     pub actions: Vec<A>,
     /// Whether the form should close.
     pub close: bool,
+    /// How the form closed, when it did. `Some(ButtonRole::Accept)` when an
+    /// OK/Accept button closed it; `Some(ButtonRole::Reject)` when a Cancel
+    /// button or Escape closed it; `None` when this event did not close the
+    /// form. Lets a host tell an Accept close from a Reject close without
+    /// reverse-engineering the closing event. Always `None` when `close` is
+    /// `false`, and never `Some(ButtonRole::Stay)` — a Stay button never
+    /// closes.
+    pub closed_via: Option<ButtonRole>,
 }
 
 impl<A> FormOutcome<A> {
@@ -528,6 +536,7 @@ impl<A> FormOutcome<A> {
         Self {
             actions: Vec::new(),
             close: false,
+            closed_via: None,
         }
     }
 
@@ -535,13 +544,18 @@ impl<A> FormOutcome<A> {
         Self {
             actions: alloc::vec![a],
             close: false,
+            closed_via: None,
         }
     }
 
-    fn closing(actions: Vec<A>) -> Self {
+    /// A closing outcome, tagged with the role that closed it. `via` is the
+    /// [`ButtonRole`] responsible: `Accept` for OK/Accept, `Reject` for a
+    /// Cancel button or Escape.
+    fn closing(actions: Vec<A>, via: ButtonRole) -> Self {
         Self {
             actions,
             close: true,
+            closed_via: Some(via),
         }
     }
 }
@@ -811,6 +825,38 @@ impl<A: Clone> FormState<A> {
         }
     }
 
+    /// Mark every field dirty, so the next Cancel/[`ButtonRole::Reject`] replays
+    /// the `restore` action of *all* fields, not only the ones the user touched.
+    ///
+    /// This exists for a [`ButtonRole::Stay`] button that mutates the underlying
+    /// model — the archetype is "Reset to Defaults" — which changes values
+    /// without going through the per-field edit paths that would normally mark a
+    /// field dirty. Without this, such a button dirties nothing, so a following
+    /// Cancel restores nothing and the button's effect survives the Cancel,
+    /// which surprises a user who expects Cancel to revert everything done since
+    /// the form opened. A Reset/Apply handler should call `mark_all_dirty()`
+    /// after applying its changes; Cancel then reverts the whole form through
+    /// the restore mechanism that already exists.
+    ///
+    /// # Restore ordering (read before relying on this for interdependent fields)
+    ///
+    /// The Cancel restore replays field `restore` actions in **field order** —
+    /// each field in the order it appears in the form, preserving each field's
+    /// own internal restore order. That is the *only* ordering guarantee. It is
+    /// wrong when fields interact: e.g. a density field ordered before the colour
+    /// fields, where restoring density grow-fills rows using the *current*
+    /// colours, so the colours must be restored first. `mark_all_dirty()` does
+    /// not reorder anything — it only widens the set of fields replayed — so a
+    /// consumer whose fields have such interdependencies must either order its
+    /// fields dependency-safely (a field that others depend on placed after
+    /// them) or capture an open-time snapshot and handle restore itself. Do not
+    /// assume `mark_all_dirty()` + Cancel resolves ordering; it does not.
+    pub fn mark_all_dirty(&mut self) {
+        for d in &mut self.dirty {
+            *d = true;
+        }
+    }
+
     /// Feed one event. Returns the actions to apply and whether to close.
     pub fn handle(&mut self, ev: FormEvent) -> FormOutcome<A> {
         if self.popup.is_some() {
@@ -862,7 +908,7 @@ impl<A: Clone> FormState<A> {
                 FormOutcome::nothing()
             }
             FormEvent::Hotkey(c) => self.on_hotkey(c),
-            FormEvent::Escape => FormOutcome::closing(self.cancel_actions()),
+            FormEvent::Escape => FormOutcome::closing(self.cancel_actions(), ButtonRole::Reject),
             FormEvent::Enter => self.activate(),
             FormEvent::Char(' ') => self.on_space(),
             FormEvent::Char(c) => {
@@ -1192,15 +1238,16 @@ impl<A: Clone> FormState<A> {
         }
         match role {
             // Accept keeps what the user changed, so nothing is replayed.
-            ButtonRole::Accept => FormOutcome::closing(actions),
+            ButtonRole::Accept => FormOutcome::closing(actions, ButtonRole::Accept),
             ButtonRole::Reject => {
                 actions.extend(self.cancel_actions());
-                FormOutcome::closing(actions)
+                FormOutcome::closing(actions, ButtonRole::Reject)
             }
             // Apply, Help, Reset: say something and stay put.
             ButtonRole::Stay => FormOutcome {
                 actions,
                 close: false,
+                closed_via: None,
             },
         }
     }
@@ -1329,6 +1376,7 @@ impl<A: Clone> FormState<A> {
                     return FormOutcome {
                         actions: committed,
                         close: false,
+                        closed_via: None,
                     };
                 }
                 let mut outcome = self.press_default();
@@ -2542,6 +2590,90 @@ mod tests {
             outcome.actions.contains(&TestOp::Off),
             "Reject replays the restore action of the field that changed"
         );
+    }
+
+    #[test]
+    fn mark_all_dirty_makes_reject_replay_every_fields_restore_in_field_order() {
+        // Baseline: with nothing touched, Escape restores nothing.
+        let mut clean = form();
+        assert!(
+            clean.handle(FormEvent::Escape).actions.is_empty(),
+            "an untouched form restores nothing on Cancel"
+        );
+
+        // After mark_all_dirty (what a "Reset to Defaults" Stay handler calls),
+        // Cancel replays *every* field's restore, in field order, even though
+        // the user edited nothing through the field paths.
+        let mut f = form();
+        f.mark_all_dirty();
+        let out = f.handle(FormEvent::Escape);
+        assert!(out.close);
+        assert_eq!(
+            out.actions,
+            alloc::vec![
+                TestOp::SetColor(2), // field 0 Colour
+                TestOp::Off,         // field 2 Cycling (field 1 ReadOnly has no restore)
+                TestOp::Period(120), // field 3 Period
+            ],
+            "mark_all_dirty widens Cancel to replay all restores in field order"
+        );
+    }
+
+    #[test]
+    fn mark_all_dirty_covers_a_stay_button_that_mutated_state() {
+        // role_form's Apply is a Stay button. A real Reset/Apply handler would
+        // apply defaults to the model and then call mark_all_dirty so the change
+        // participates in Cancel restore. Pressing Apply alone dirties nothing;
+        // mark_all_dirty is what enrols the touched toggle's restore.
+        let mut f = role_form();
+        let apply = f.handle(FormEvent::Hotkey('a'));
+        assert!(!apply.close, "Apply stays put");
+        assert_eq!(apply.closed_via, None, "a Stay button never closes");
+        f.mark_all_dirty();
+        let out = f.handle(FormEvent::Hotkey('c'));
+        assert!(out.close);
+        assert!(
+            out.actions.contains(&TestOp::Off),
+            "after mark_all_dirty, Cancel restores the field the Stay button's \
+             defaults would have changed"
+        );
+    }
+
+    #[test]
+    fn closed_via_is_accept_on_ok() {
+        let mut f = role_form();
+        let out = f.handle(FormEvent::Hotkey('o'));
+        assert!(out.close);
+        assert_eq!(out.closed_via, Some(ButtonRole::Accept));
+    }
+
+    #[test]
+    fn closed_via_is_reject_on_the_cancel_button() {
+        let mut f = role_form();
+        let out = f.handle(FormEvent::Hotkey('c'));
+        assert!(out.close);
+        assert_eq!(out.closed_via, Some(ButtonRole::Reject));
+    }
+
+    #[test]
+    fn closed_via_is_reject_on_escape() {
+        let mut f = role_form();
+        let out = f.handle(FormEvent::Escape);
+        assert!(out.close);
+        assert_eq!(out.closed_via, Some(ButtonRole::Reject));
+    }
+
+    #[test]
+    fn closed_via_is_none_on_a_non_closing_event() {
+        let mut f = role_form();
+        // A Stay-button press does not close.
+        let stay = f.handle(FormEvent::Hotkey('a'));
+        assert!(!stay.close);
+        assert_eq!(stay.closed_via, None);
+        // Neither does plain navigation.
+        let nav = f.handle(FormEvent::Down);
+        assert!(!nav.close);
+        assert_eq!(nav.closed_via, None);
     }
 
     #[test]
