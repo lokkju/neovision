@@ -464,7 +464,7 @@ dependencies = [
 
 [[package]]
 name = "neovision"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "crossterm",
  "embedded-graphics",
@@ -476,7 +476,7 @@ dependencies = [
 
 [[package]]
 name = "neovision-core"
-version = "1.3.0"
+version = "1.4.0"
 
 [[package]]
 name = "nix"
